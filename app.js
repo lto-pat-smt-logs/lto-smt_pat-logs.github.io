@@ -4,7 +4,9 @@ const SETTINGS_STORAGE_KEY = "LTO_CPAO_SETTINGS_2026";
 const CUSTOM_ACCOMPLISHMENTS_KEY = "LTO_CPAO_ACCOMPLISHMENTS_2026";
 const LAST_WORKING_ADD_ACTION_KEY = "LTO_WORKING_ADD_ACTION_V1";
 const LAST_WORKING_UPDATE_ACTION_KEY = "LTO_WORKING_UPDATE_ACTION_V1";
+const LAST_WORKING_SAVE_SETTINGS_ACTION_KEY = "LTO_WORKING_SAVE_SETTINGS_ACTION_V1";
 const PENDING_SYNC_QUEUE_KEY = "LTO_PENDING_SYNC_QUEUE_V1";
+const PENDING_SETTINGS_SYNC_KEY = "LTO_PENDING_SETTINGS_SYNC_V1";
 
 const OFFICIAL_ROLE_RANKS = [
     "Regional Director",
@@ -1346,9 +1348,20 @@ function mergeSettingsSafely(localOrDefaultSettings, incomingSettings, preferInc
         mergedGroups[grp] = Array.from(new Set(chosen.map(x => String(x || '').trim()).filter(Boolean)));
     });
 
-    const mergedPlatforms = Array.isArray(inc.platforms) && inc.platforms.length > 0
+    const rawMergedPlatforms = Array.isArray(inc.platforms) && inc.platforms.length > 0
         ? inc.platforms
         : (base.platforms || AppState.settings.platforms);
+    const mergedPlatforms = rawMergedPlatforms.map(p => {
+        if (typeof p === "string") {
+            return { name: p, autoGen: false, prefix: "CPAO" };
+        }
+        const autoFlag = (p.autoGen === true || String(p.autoGen).trim().toLowerCase() === "true" || p.autoGen === 1 || String(p.autoGen).trim().toUpperCase() === "YES");
+        return {
+            name: String(p.name || "").trim(),
+            autoGen: autoFlag,
+            prefix: String(p.prefix || "CPAO").trim()
+        };
+    }).filter(p => p.name);
 
     const mergedTicketTypes = Array.isArray(inc.ticketTypes) && inc.ticketTypes.length > 0
         ? inc.ticketTypes
@@ -1724,9 +1737,12 @@ function mergeQueuedTicketsIntoList(ticketList) {
 
 async function flushPendingSyncQueue(silent = true) {
     if (isFlushingSyncQueue || isSavingTicket) return;
+    if (hasPendingSettingsSync()) {
+        await saveAllSettingsToCloud(true);
+    }
     const queue = loadPendingSyncQueue();
     if (!queue.length) {
-        updateSyncStatusBadge("synced");
+        updateSyncStatusBadge(hasPendingSettingsSync() ? "queued" : "synced");
         return;
     }
 
@@ -2083,20 +2099,88 @@ async function saveMyAccountForm(e) {
     showToast("Account settings updated successfully.");
 }
 
+function getActiveSettingsAppsScriptUrl() {
+    const customUrl = String(AppState.settings?.integrations?.appsScriptUrl || "").trim();
+    return (customUrl && /^https?:\/\//i.test(customUrl)) ? customUrl : APPS_SCRIPT_URL;
+}
+
+function hasPendingSettingsSync() {
+    return localStorage.getItem(PENDING_SETTINGS_SYNC_KEY) === "1";
+}
+
+function setPendingSettingsSync(isPending) {
+    try {
+        if (isPending) {
+            localStorage.setItem(PENDING_SETTINGS_SYNC_KEY, "1");
+        } else {
+            localStorage.removeItem(PENDING_SETTINGS_SYNC_KEY);
+        }
+    } catch (e) {}
+}
+
+function parseCloudSettingsResponse(rawResult) {
+    if (!rawResult) return null;
+    let obj = rawResult;
+    if (typeof obj === "string") {
+        try { obj = JSON.parse(obj); } catch (e) { return null; }
+    }
+    if (obj && typeof obj === "object") {
+        if (typeof obj.settings === "string") {
+            try { obj = JSON.parse(obj.settings); } catch (e) { return null; }
+        } else if (obj.settings && typeof obj.settings === "object") {
+            obj = obj.settings;
+        } else if (typeof obj.data === "string") {
+            try { obj = JSON.parse(obj.data); } catch (e) { return null; }
+        } else if (obj.data && typeof obj.data === "object" && (obj.data.platforms || obj.data.categories || obj.data.categoryGroups)) {
+            obj = obj.data;
+        }
+    }
+    if (obj && typeof obj === "object" && (obj.categories || obj.categoryGroups || obj.platforms || obj.endorsementForm || obj.reportConfig || obj.preferences)) {
+        return obj;
+    }
+    return null;
+}
+
 async function fetchSettingsFromCloud() {
     loadLocalSettingsCache();
-    try {
-        let response = await fetch(APPS_SCRIPT_URL + "?action=getSettings&t=" + Date.now(), { mode: 'cors' });
-        if (!response.ok) return;
-        let result = await response.json();
-        const cloudSettings = (result && typeof result === "object" && result.settings && typeof result.settings === "object")
-            ? result.settings
-            : result;
-        if (cloudSettings && typeof cloudSettings === "object" && (cloudSettings.categories || cloudSettings.categoryGroups || cloudSettings.platforms || cloudSettings.endorsementForm || cloudSettings.reportConfig || cloudSettings.preferences)) {
+    // If local settings have unsynced changes waiting to push to Google Sheets, push them first before reading
+    if (hasPendingSettingsSync()) {
+        await saveAllSettingsToCloud(true);
+    }
+
+    const scriptUrl = getActiveSettingsAppsScriptUrl();
+    const getActions = ["getSettings", "loadSettings", "readSettings", "fetchSettings"];
+    let cloudSettings = null;
+
+    for (const act of getActions) {
+        try {
+            const response = await fetch(`${scriptUrl}?action=${encodeURIComponent(act)}&sheet=Settings&t=${Date.now()}`, {
+                method: "GET",
+                mode: "cors",
+                cache: "no-store"
+            });
+            if (!response.ok) continue;
+            const rawText = await response.text();
+            let parsedJson = null;
+            try { parsedJson = rawText ? JSON.parse(rawText) : null; } catch (e) { parsedJson = rawText; }
+            const extracted = parseCloudSettingsResponse(parsedJson);
+            if (extracted) {
+                cloudSettings = extracted;
+                break;
+            }
+        } catch (e) {}
+    }
+
+    if (cloudSettings) {
+        const localUpdatedAt = Number(AppState.settings?._settingsUpdatedAt || 0);
+        const cloudUpdatedAt = Number(cloudSettings?._settingsUpdatedAt || 0);
+        // Never let stale cloud settings overwrite newer local edits that are still pending sync
+        if (!hasPendingSettingsSync() && (cloudUpdatedAt >= localUpdatedAt || localUpdatedAt === 0)) {
             AppState.settings = mergeSettingsSafely(AppState.settings, cloudSettings, true);
             persistLocalSettingsCache();
         }
-    } catch(e) {}
+    }
+
     ensureCategoryGroupsInitialized();
     getEndorsementFormConfig();
     persistLocalSettingsCache();
@@ -2105,22 +2189,89 @@ async function fetchSettingsFromCloud() {
     updateUIPrivileges();
 }
 
+async function sendSettingsPayloadToAppsScript(scriptUrl, actionName, settingsPayload) {
+    const serializedSettings = JSON.stringify(settingsPayload);
+    const bodyObj = {
+        action: actionName,
+        sheet: "Settings",
+        settings: settingsPayload,
+        settingsJson: serializedSettings,
+        platforms: settingsPayload.platforms,
+        categoryGroups: settingsPayload.categoryGroups,
+        categories: settingsPayload.categories,
+        ticketTypes: settingsPayload.ticketTypes,
+        actionsTaken: settingsPayload.actionsTaken,
+        statuses: settingsPayload.statuses,
+        enableResponderClipboard: !!settingsPayload.enableResponderClipboard,
+        endorsementForm: settingsPayload.endorsementForm,
+        reportConfig: settingsPayload.reportConfig,
+        preferences: settingsPayload.preferences,
+        notifications: settingsPayload.notifications,
+        security: settingsPayload.security,
+        integrations: settingsPayload.integrations,
+        updatedAt: settingsPayload._settingsUpdatedAt || Date.now()
+    };
+
+    const resp = await fetchWithRetry(scriptUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(bodyObj)
+    }, 2);
+
+    const rawText = await resp.text();
+    let resData = {};
+    try { resData = rawText ? JSON.parse(rawText) : {}; } catch (e) { resData = {}; }
+    const errMsg = (resData && (resData.error || (resData.success === false && (resData.message || "Save settings failed")))) || "";
+    return { resData, errMsg };
+}
+
 async function saveAllSettingsToCloud(silent = false) {
     ensureCategoryGroupsInitialized();
     getEndorsementFormConfig();
+    AppState.settings._settingsUpdatedAt = Date.now();
     persistLocalSettingsCache();
+    setPendingSettingsSync(true);
     populateDropdowns();
     renderSettingsTables();
-    try {
-        await fetchWithRetry(APPS_SCRIPT_URL, {
-            method: "POST",
-            headers: { "Content-Type": "text/plain;charset=utf-8" },
-            body: JSON.stringify({ action: "saveSettings", settings: AppState.settings })
-        }, 2);
-        if (!silent) showToast("Settings saved locally and synced to cloud.");
-    } catch(e) {
-        if (!silent) showToast("Settings saved locally.");
+
+    const scriptUrl = getActiveSettingsAppsScriptUrl();
+    const cachedAction = localStorage.getItem(LAST_WORKING_SAVE_SETTINGS_ACTION_KEY);
+    const actionCandidates = Array.from(new Set(
+        [cachedAction, "saveSettings", "updateSettings", "setSettings", "saveConfig", "writeSettings"].filter(Boolean)
+    ));
+
+    let synced = false;
+    let lastErr = "";
+
+    for (const act of actionCandidates) {
+        try {
+            const { errMsg } = await sendSettingsPayloadToAppsScript(scriptUrl, act, AppState.settings);
+            if (!errMsg) {
+                synced = true;
+                localStorage.setItem(LAST_WORKING_SAVE_SETTINGS_ACTION_KEY, act);
+                setPendingSettingsSync(false);
+                break;
+            }
+            lastErr = errMsg;
+            if (!isUnknownActionErrorMessage(errMsg)) {
+                break;
+            }
+        } catch (e) {
+            lastErr = e && e.message ? e.message : "Network error";
+        }
     }
+
+    if (synced) {
+        updateSyncStatusBadge(loadPendingSyncQueue().length > 0 ? "queued" : "synced");
+        if (!silent) showToast("Settings saved and synced to Google Sheets.");
+    } else {
+        updateSyncStatusBadge("queued");
+        if (!silent) {
+            showToast("Settings saved locally & queued for Google Sheets sync.");
+        }
+        console.warn("Settings cloud sync queued for retry:", lastErr);
+    }
+    return synced;
 }
 
 async function fetchFromGoogleSheets() {
@@ -2663,8 +2814,16 @@ async function saveSettingItemForm(e) {
         generateReport();
     }
     closeSettingModal();
-    showToast("Setting saved locally. Syncing to cloud...");
-    saveAllSettingsToCloud(true);
+    setSettingsFeedbackBanner("Syncing updated setting to Google Sheets...", "saving");
+    const synced = await saveAllSettingsToCloud(true);
+    if (synced) {
+        lastSettingsSavedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        setSettingsFeedbackBanner("Setting saved and synced to Google Sheets.", "success");
+        showToast("Setting saved & synced to Google Sheets.");
+    } else {
+        setSettingsFeedbackBanner("Setting saved locally — queued for Google Sheets sync.", "dirty");
+        showToast("Setting saved locally (queued for sync).");
+    }
 }
 
 function deleteSettingItem(type, index, groupName = null) {
@@ -5537,20 +5696,29 @@ function runWorkdayCalculator() {
 }
 
 
-function togglePlatformAutoGen(idx) {
+async function togglePlatformAutoGen(idx) {
     const p = AppState.settings.platforms[idx];
     if (!p) return;
     if (typeof p === 'string') {
         AppState.settings.platforms[idx] = { name: p, prefix: 'CPAO', autoGen: true };
     } else {
-        p.autoGen = !(p.autoGen === true || p.autoGen === 'true');
+        const currentAuto = (p.autoGen === true || String(p.autoGen).trim().toLowerCase() === 'true' || p.autoGen === 1 || String(p.autoGen).trim().toUpperCase() === 'YES');
+        p.autoGen = !currentAuto;
     }
     const updated = AppState.settings.platforms[idx];
     persistLocalSettingsCache();
     renderSettingsTables();
     populateDropdowns();
-    saveAllSettingsToCloud(true);
-    showToast(`${updated.name}: Auto-Generate Ticket Number set to ${updated.autoGen ? 'YES' : 'NO'}.`, "success");
+    setSettingsFeedbackBanner(`Syncing ${updated.name} auto-generate (${updated.autoGen ? 'YES' : 'NO'}) to Google Sheets...`, "saving");
+    const synced = await saveAllSettingsToCloud(true);
+    if (synced) {
+        lastSettingsSavedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        setSettingsFeedbackBanner(`${updated.name} auto-generate (${updated.autoGen ? 'YES' : 'NO'}) synced to Google Sheets.`, "success");
+        showToast(`${updated.name}: Auto-Generate set to ${updated.autoGen ? 'YES' : 'NO'} & synced to Google Sheets.`);
+    } else {
+        setSettingsFeedbackBanner(`${updated.name} updated locally — queued for Google Sheets sync.`, "dirty");
+        showToast(`${updated.name}: Auto-Generate set to ${updated.autoGen ? 'YES' : 'NO'} (queued for sync).`);
+    }
 }
 
 function populateReportFilterDropdowns() {
