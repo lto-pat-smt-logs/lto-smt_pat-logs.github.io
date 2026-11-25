@@ -6,7 +6,10 @@ const LAST_WORKING_ADD_ACTION_KEY = "LTO_WORKING_ADD_ACTION_V1";
 const LAST_WORKING_UPDATE_ACTION_KEY = "LTO_WORKING_UPDATE_ACTION_V1";
 const LAST_WORKING_SAVE_SETTINGS_ACTION_KEY = "LTO_WORKING_SAVE_SETTINGS_ACTION_V1";
 const PENDING_SYNC_QUEUE_KEY = "LTO_PENDING_SYNC_QUEUE_V1";
-const PENDING_SETTINGS_SYNC_KEY = "LTO_PENDING_SETTINGS_SYNC_V1";
+const PENDING_SETTINGS_SYNC_KEY = "LTO_PENDING_SETTINGS_SYNC_KEY";
+
+const TIMER_24H_DURATION_MS = 24 * 60 * 60 * 1000;
+const TIMER_24H_CHECK_INTERVAL_MS = 60 * 1000;
 
 const OFFICIAL_ROLE_RANKS = [
     "Regional Director",
@@ -31,6 +34,32 @@ const CATEGORY_GROUPS = [
     "Client Feedbacks",
     "Other concerns"
 ];
+
+const DEFAULT_REPORT_COLUMNS = {
+    hdrTop10: "TOP 10 CONCERNS / ISSUES",
+    colTopRank: "RANK",
+    colTopConcern: "CONCERN / ISSUE",
+    colTopCount: "COUNT (%)",
+
+    hdrCategoryPortal: "SUMMARY OF ISSUES / CONCERNS AND OTHER VARIABLES PER PORTAL",
+    colCatGroup: "CATEGORY GROUP",
+    colCatName: "CONCERN CATEGORY",
+    colCatPortals: "PORTALS",
+    colCatTotal: "TOTAL",
+
+    hdrPortalStatus: "SUMMARY OF ISSUES / CONCERNS AND OTHER VARIABLES PER PORTAL (STATUS & RESPONSE RATE)",
+    colPortalName: "PORTAL",
+    colAck: "ACKNOWLEDGED",
+    colRes: "RESOLVED",
+    colPend: "PENDING",
+    colRate: "RESPONSE RATE (%)",
+
+    hdrRegionalEndorsed: "TOTAL CONCERNS ENDORSED TO REGIONAL OFFICES",
+    colRegOffice: "REGIONAL OFFICE",
+    colRegTotal: "TOTAL ENDORSED",
+    colRegResolved: "RESOLVED",
+    colRegPending: "PENDING"
+};
 
 const STANDARD_ENDORSEMENT_TEMPLATE_FIELDS = {
     letterDate: "{todayDate}",
@@ -151,6 +180,7 @@ let AppState = {
         ],
         customFields: [],
         endorsementForm: { ...STANDARD_ENDORSEMENT_TEMPLATE_FIELDS },
+        reportColumns: { ...DEFAULT_REPORT_COLUMNS },
         reportConfig: {
             republic: "Republic of the Philippines",
             department: "Department of Transportation",
@@ -169,6 +199,7 @@ let AppState = {
             notedDesig: "Head, LTO COMMS/CPAO"
         },
         preferences: {
+            colorMode: "dark",
             accentTheme: "sky",
             denseTableMode: false,
             autoRefreshSeconds: 4,
@@ -204,6 +235,53 @@ let calcCurrentYear = 2026;
 let calcCurrentMonth = 4;
 let pickerViewYear = 2026;
 let pickerViewMonth = 10;
+
+/* ============================================================================
+   LIGHT / DARK THEME MODE HELPERS
+   ============================================================================ */
+
+function getCurrentColorMode() {
+    const mode = String(AppState.settings?.preferences?.colorMode || "dark").toLowerCase().trim();
+    return mode === "light" ? "light" : "dark";
+}
+
+function applyThemeMode(mode) {
+    const normalized = String(mode || "dark").toLowerCase().trim() === "light" ? "light" : "dark";
+    if (!AppState.settings.preferences) AppState.settings.preferences = {};
+    AppState.settings.preferences.colorMode = normalized;
+
+    document.documentElement.setAttribute("data-theme", normalized);
+    document.body.classList.toggle("light-mode", normalized === "light");
+
+    const iconEl = document.getElementById("themeModeIcon");
+    const labelEl = document.getElementById("themeModeLabel");
+    if (normalized === "light") {
+        if (iconEl) iconEl.textContent = "🌙";
+        if (labelEl) labelEl.textContent = "Dark";
+    } else {
+        if (iconEl) iconEl.textContent = "☀️";
+        if (labelEl) labelEl.textContent = "Light";
+    }
+
+    const modeSel = document.getElementById("cfgPrefColorMode");
+    if (modeSel && modeSel.value !== normalized) {
+        modeSel.value = normalized;
+    }
+
+    persistLocalSettingsCache();
+}
+
+function toggleThemeMode() {
+    const nextMode = getCurrentColorMode() === "light" ? "dark" : "light";
+    applyThemeMode(nextMode);
+    saveAllSettingsToCloud(true);
+    showToast(`Switched to ${nextMode === "light" ? "Light" : "Dark"} Mode.`);
+}
+
+function onThemeModeSelectChange(selectedMode) {
+    applyThemeMode(selectedMode);
+    onSettingsControlChange();
+}
 
 /* ============================================================================
    TICKET OWNERSHIP & PERMISSION HELPERS
@@ -284,6 +362,7 @@ function getDefaultSettingsObject() {
         ],
         customFields: [],
         endorsementForm: { ...STANDARD_ENDORSEMENT_TEMPLATE_FIELDS },
+        reportColumns: { ...DEFAULT_REPORT_COLUMNS },
         reportConfig: {
             republic: "Republic of the Philippines",
             department: "Department of Transportation",
@@ -302,6 +381,7 @@ function getDefaultSettingsObject() {
             notedDesig: "Head, LTO COMMS/CPAO"
         },
         preferences: {
+            colorMode: "dark",
             accentTheme: "sky",
             denseTableMode: false,
             autoRefreshSeconds: 4,
@@ -327,6 +407,92 @@ function getDefaultSettingsObject() {
             autoQueueOfflineWrites: true
         }
     };
+}
+
+function getReportColumnsConfig() {
+    return {
+        ...DEFAULT_REPORT_COLUMNS,
+        ...(AppState.settings?.reportColumns || {})
+    };
+}
+
+function readReportColumnsFromInputs() {
+    const cur = getReportColumnsConfig();
+    const valOrFallback = (id, fallback) => {
+        const el = document.getElementById(id);
+        if (!el) return fallback;
+        const v = String(el.value || "").trim();
+        return v || fallback;
+    };
+    return {
+        hdrTop10: valOrFallback("cfgRepHdrTop10", cur.hdrTop10),
+        colTopRank: valOrFallback("cfgRepColTopRank", cur.colTopRank),
+        colTopConcern: valOrFallback("cfgRepColTopConcern", cur.colTopConcern),
+        colTopCount: valOrFallback("cfgRepColTopCount", cur.colTopCount),
+
+        hdrCategoryPortal: valOrFallback("cfgRepHdrCategoryPortal", cur.hdrCategoryPortal),
+        colCatGroup: valOrFallback("cfgRepColCatGroup", cur.colCatGroup),
+        colCatName: valOrFallback("cfgRepColCatName", cur.colCatName),
+        colCatPortals: valOrFallback("cfgRepColCatPortals", cur.colCatPortals),
+        colCatTotal: valOrFallback("cfgRepColCatTotal", cur.colCatTotal),
+
+        hdrPortalStatus: valOrFallback("cfgRepHdrPortalStatus", cur.hdrPortalStatus),
+        colPortalName: valOrFallback("cfgRepColPortalName", cur.colPortalName),
+        colAck: valOrFallback("cfgRepColAck", cur.colAck),
+        colRes: valOrFallback("cfgRepColRes", cur.colRes),
+        colPend: valOrFallback("cfgRepColPend", cur.colPend),
+        colRate: valOrFallback("cfgRepColRate", cur.colRate),
+
+        hdrRegionalEndorsed: valOrFallback("cfgRepHdrRegionalEndorsed", cur.hdrRegionalEndorsed),
+        colRegOffice: valOrFallback("cfgRepColRegOffice", cur.colRegOffice),
+        colRegTotal: valOrFallback("cfgRepColRegTotal", cur.colRegTotal),
+        colRegResolved: valOrFallback("cfgRepColRegResolved", cur.colRegResolved),
+        colRegPending: valOrFallback("cfgRepColRegPending", cur.colRegPending)
+    };
+}
+
+function populateReportColumnsInputs() {
+    const rc = getReportColumnsConfig();
+    const map = {
+        cfgRepHdrTop10: rc.hdrTop10,
+        cfgRepColTopRank: rc.colTopRank,
+        cfgRepColTopConcern: rc.colTopConcern,
+        cfgRepColTopCount: rc.colTopCount,
+
+        cfgRepHdrCategoryPortal: rc.hdrCategoryPortal,
+        cfgRepColCatGroup: rc.colCatGroup,
+        cfgRepColCatName: rc.colCatName,
+        cfgRepColCatPortals: rc.colCatPortals,
+        cfgRepColCatTotal: rc.colCatTotal,
+
+        cfgRepHdrPortalStatus: rc.hdrPortalStatus,
+        cfgRepColPortalName: rc.colPortalName,
+        cfgRepColAck: rc.colAck,
+        cfgRepColRes: rc.colRes,
+        cfgRepColPend: rc.colPend,
+        cfgRepColRate: rc.colRate,
+
+        cfgRepHdrRegionalEndorsed: rc.hdrRegionalEndorsed,
+        cfgRepColRegOffice: rc.colRegOffice,
+        cfgRepColRegTotal: rc.colRegTotal,
+        cfgRepColRegResolved: rc.colRegResolved,
+        cfgRepColRegPending: rc.colRegPending
+    };
+    Object.keys(map).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = map[id] || "";
+    });
+}
+
+function resetReportColumnsToDefault() {
+    AppState.settings.reportColumns = { ...DEFAULT_REPORT_COLUMNS };
+    populateReportColumnsInputs();
+    persistLocalSettingsCache();
+    markSettingsDirty(true);
+    if (document.getElementById("viewReports")?.style.display !== "none") {
+        generateReport();
+    }
+    showToast("Report column names and headers reset to default.");
 }
 
 function setSettingsFeedbackBanner(message, state = "idle") {
@@ -362,7 +528,7 @@ function markSettingsDirty(isDirty = true) {
 
 function selectSettingsSection(sectionKey) {
     activeSettingsSection = sectionKey || "all";
-    const sections = ["profile", "preferences", "notifications", "security", "integrations", "dropdowns"];
+    const sections = ["profile", "preferences", "notifications", "security", "integrations", "reportcols", "signatories", "dropdowns"];
     sections.forEach(sec => {
         const panel = document.getElementById(`settingsSec_${sec}`);
         const tab = document.getElementById(`settingsSubTab_${sec}`);
@@ -370,17 +536,19 @@ function selectSettingsSection(sectionKey) {
         if (panel) panel.classList.toggle("hidden", !show);
         if (tab) {
             const active = activeSettingsSection === sec;
+            tab.setAttribute("aria-selected", active ? "true" : "false");
             tab.className = active
-                ? "px-3 py-1.5 rounded-lg text-xs font-extrabold bg-sky-600 text-white shadow transition whitespace-nowrap"
-                : "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition whitespace-nowrap";
+                ? "px-3 py-1.5 rounded-lg text-xs font-extrabold bg-sky-600 text-white shadow transition whitespace-nowrap cursor-pointer"
+                : "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition whitespace-nowrap cursor-pointer";
         }
     });
     const allTab = document.getElementById("settingsSubTab_all");
     if (allTab) {
         const active = activeSettingsSection === "all";
+        allTab.setAttribute("aria-selected", active ? "true" : "false");
         allTab.className = active
-            ? "px-3 py-1.5 rounded-lg text-xs font-extrabold bg-sky-600 text-white shadow transition whitespace-nowrap"
-            : "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition whitespace-nowrap";
+            ? "px-3 py-1.5 rounded-lg text-xs font-extrabold bg-sky-600 text-white shadow transition whitespace-nowrap cursor-pointer"
+            : "px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition whitespace-nowrap cursor-pointer";
     }
 }
 
@@ -444,6 +612,7 @@ function populateEnhancedSettingsUI() {
     const notif = { ...defaults.notifications, ...(s.notifications || {}) };
     const sec = { ...defaults.security, ...(s.security || {}) };
     const integ = { ...defaults.integrations, ...(s.integrations || {}) };
+    const repCols = getReportColumnsConfig();
 
     settingsSnapshotBeforeEdit = JSON.stringify({
         enableResponderClipboard: s.enableResponderClipboard !== false,
@@ -451,6 +620,7 @@ function populateEnhancedSettingsUI() {
         notifications: notif,
         security: sec,
         integrations: integ,
+        reportColumns: repCols,
         profileName: currentUser.name || "",
         profileColor: currentUser.logColor || "Default"
     });
@@ -474,11 +644,13 @@ function populateEnhancedSettingsUI() {
     }
 
     // Preferences section
+    const modeSel = document.getElementById("cfgPrefColorMode");
     const themeSel = document.getElementById("cfgPrefAccentTheme");
     const denseChk = document.getElementById("cfgPrefDenseMode");
     const pollSlider = document.getElementById("cfgPrefPollInterval");
     const pollLabel = document.getElementById("cfgPrefPollIntervalLabel");
     const scopeSel = document.getElementById("cfgPrefDefaultScope");
+    if (modeSel) modeSel.value = pref.colorMode === "light" ? "light" : "dark";
     if (themeSel) themeSel.value = pref.accentTheme || "sky";
     if (denseChk) denseChk.checked = !!pref.denseTableMode;
     if (pollSlider) pollSlider.value = String(pref.autoRefreshSeconds || 4);
@@ -513,6 +685,8 @@ function populateEnhancedSettingsUI() {
     if (iLogs) iLogs.value = integ.logsWorksheetName || "Logs";
     if (iQueue) iQueue.checked = integ.autoQueueOfflineWrites !== false;
 
+    populateReportColumnsInputs();
+
     markSettingsDirty(false);
     validateSettingsFormValues();
     renderSettingsTables();
@@ -532,6 +706,8 @@ function onSettingsControlChange() {
     if (profColorEnable && profColorPicker) {
         profColorPicker.disabled = !profColorEnable.checked;
     }
+
+    AppState.settings.reportColumns = readReportColumnsFromInputs();
 
     validateSettingsFormValues();
     markSettingsDirty(true);
@@ -565,8 +741,11 @@ async function saveEnhancedSettingsForm() {
     const opNameEl = document.getElementById("activeOperatorName");
     if (opNameEl) opNameEl.textContent = currentUser.name || currentUser.username;
 
+    const selectedColorMode = document.getElementById("cfgPrefColorMode")?.value === "light" ? "light" : "dark";
     AppState.settings.enableResponderClipboard = !!document.getElementById("cfgEnableResponderClipboard")?.checked;
+    AppState.settings.reportColumns = readReportColumnsFromInputs();
     AppState.settings.preferences = {
+        colorMode: selectedColorMode,
         accentTheme: document.getElementById("cfgPrefAccentTheme")?.value || "sky",
         denseTableMode: !!document.getElementById("cfgPrefDenseMode")?.checked,
         autoRefreshSeconds: parseInt(document.getElementById("cfgPrefPollInterval")?.value || "4", 10),
@@ -592,6 +771,8 @@ async function saveEnhancedSettingsForm() {
         autoQueueOfflineWrites: !!document.getElementById("cfgIntAutoQueue")?.checked
     };
 
+    applyThemeMode(selectedColorMode);
+
     const banner24h = document.getElementById("reminder24hBanner");
     if (banner24h && !AppState.settings.notifications.overdue24hBanner) {
         banner24h.classList.add("hidden");
@@ -603,6 +784,9 @@ async function saveEnhancedSettingsForm() {
     await saveAllSettingsToCloud(false);
     updateUIPrivileges();
     renderTable();
+    if (document.getElementById("viewReports")?.style.display !== "none") {
+        generateReport();
+    }
 
     settingsSnapshotBeforeEdit = JSON.stringify({
         enableResponderClipboard: AppState.settings.enableResponderClipboard,
@@ -610,6 +794,7 @@ async function saveEnhancedSettingsForm() {
         notifications: AppState.settings.notifications,
         security: AppState.settings.security,
         integrations: AppState.settings.integrations,
+        reportColumns: AppState.settings.reportColumns,
         profileName: currentUser.name || "",
         profileColor: currentUser.logColor || "Default"
     });
@@ -620,7 +805,7 @@ async function saveEnhancedSettingsForm() {
 function resetEnhancedSettingsToDefault() {
     showSystemConfirm(
         "Reset Settings to Default",
-        "Reset preferences, notifications, security, and integration settings back to default values?",
+        "Reset preferences, notifications, security, report column headers, and integration settings back to default values?",
         async () => {
             const defs = getDefaultSettingsObject();
             AppState.settings.enableResponderClipboard = defs.enableResponderClipboard;
@@ -628,9 +813,14 @@ function resetEnhancedSettingsToDefault() {
             AppState.settings.notifications = { ...defs.notifications };
             AppState.settings.security = { ...defs.security };
             AppState.settings.integrations = { ...defs.integrations };
+            AppState.settings.reportColumns = { ...defs.reportColumns };
+            applyThemeMode(defs.preferences.colorMode || "dark");
             populateEnhancedSettingsUI();
             await saveAllSettingsToCloud(false);
             updateUIPrivileges();
+            if (document.getElementById("viewReports")?.style.display !== "none") {
+                generateReport();
+            }
             lastSettingsSavedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
             setSettingsFeedbackBanner("Settings reset to default values.", "success");
             showToast("Settings reset to defaults.");
@@ -649,6 +839,7 @@ function cancelEnhancedSettingsChanges() {
         "Discard your unsaved changes in Settings and return to PAT/SMT Logs Sheet?",
         () => {
             populateEnhancedSettingsUI();
+            applyThemeMode(getCurrentColorMode());
             markSettingsDirty(false);
             switchMainTab("logs");
         },
@@ -780,6 +971,36 @@ function toggleEditReportPreview() {
     }
     setReportPreviewEditState(!isReportPreviewEditing);
     showToast(isReportPreviewEditing ? "Report editing enabled — click directly on text to edit." : "Report edits applied.");
+}
+
+function printReportDocument() {
+    if (!canUserGenerateReports()) return;
+    const docEl = document.getElementById("printableReportDocument");
+    if (!docEl || !docEl.innerHTML.trim()) {
+        generateReport();
+    }
+    if (isReportPreviewEditing) setReportPreviewEditState(false);
+    const previewHtml = document.getElementById("printableReportDocument")?.innerHTML || "";
+    const target = document.getElementById("endorseLetterPrintArea");
+    if (target && previewHtml) {
+        target.dataset.prevHtml = target.innerHTML;
+        target.dataset.prevClass = target.className;
+        target.className = "w-full max-w-[1120px]";
+        target.innerHTML = `<div class="report-a4-page">${previewHtml}</div>`;
+    }
+    document.body.classList.add("printing-report");
+    setTimeout(() => {
+        window.print();
+        setTimeout(() => {
+            document.body.classList.remove("printing-report");
+            if (target && target.dataset.prevHtml !== undefined) {
+                target.innerHTML = target.dataset.prevHtml;
+                target.className = target.dataset.prevClass || "";
+                delete target.dataset.prevHtml;
+                delete target.dataset.prevClass;
+            }
+        }, 400);
+    }, 150);
 }
 
 function ensureDirectoryOfficialsInitialized() {
@@ -1385,6 +1606,12 @@ function mergeSettingsSafely(localOrDefaultSettings, incomingSettings, preferInc
     if (!mergedReportCfg.logo2Url && base.reportConfig?.logo2Url) mergedReportCfg.logo2Url = base.reportConfig.logo2Url;
     if (!mergedReportCfg.logo3Url && base.reportConfig?.logo3Url) mergedReportCfg.logo3Url = base.reportConfig.logo3Url;
 
+    const mergedReportCols = {
+        ...DEFAULT_REPORT_COLUMNS,
+        ...(base.reportColumns || {}),
+        ...(inc.reportColumns || {})
+    };
+
     const enableClipboard = inc.enableResponderClipboard !== undefined
         ? !!inc.enableResponderClipboard
         : (base.enableResponderClipboard !== undefined ? !!base.enableResponderClipboard : true);
@@ -1402,6 +1629,7 @@ function mergeSettingsSafely(localOrDefaultSettings, incomingSettings, preferInc
             ...(base.endorsementForm || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS),
             ...(inc.endorsementForm || {})
         },
+        reportColumns: mergedReportCols,
         reportConfig: mergedReportCfg,
         preferences: { ...defs.preferences, ...(base.preferences || {}), ...(inc.preferences || {}) },
         notifications: { ...defs.notifications, ...(base.notifications || {}), ...(inc.notifications || {}) },
@@ -1926,6 +2154,7 @@ async function initSystem() {
     }
 
     loadLocalSettingsCache();
+    applyThemeMode(getCurrentColorMode());
     ensureCategoryGroupsInitialized();
     loadCustomAccomplishmentsStorage();
     loadOffDatesStorage();
@@ -1964,6 +2193,7 @@ async function initSystem() {
 
     await flushPendingSyncQueue(true);
     await fetchSettingsFromCloud();
+    applyThemeMode(getCurrentColorMode());
     await fetchUsersFromCloud();
     await fetchFromGoogleSheets();
     await fetchOffDatesFromCloud();
@@ -1994,6 +2224,7 @@ async function fetchAllCloudData() {
     await flushPendingSyncQueue(false);
     await saveAllSettingsToCloud(true);
     await fetchSettingsFromCloud();
+    applyThemeMode(getCurrentColorMode());
     await fetchUsersFromCloud();
     await fetchFromGoogleSheets();
     await fetchOffDatesFromCloud();
@@ -2135,7 +2366,7 @@ function parseCloudSettingsResponse(rawResult) {
             obj = obj.data;
         }
     }
-    if (obj && typeof obj === "object" && (obj.categories || obj.categoryGroups || obj.platforms || obj.endorsementForm || obj.reportConfig || obj.preferences)) {
+    if (obj && typeof obj === "object" && (obj.categories || obj.categoryGroups || obj.platforms || obj.endorsementForm || obj.reportConfig || obj.reportColumns || obj.preferences)) {
         return obj;
     }
     return null;
@@ -2143,7 +2374,6 @@ function parseCloudSettingsResponse(rawResult) {
 
 async function fetchSettingsFromCloud() {
     loadLocalSettingsCache();
-    // If local settings have unsynced changes waiting to push to Google Sheets, push them first before reading
     if (hasPendingSettingsSync()) {
         await saveAllSettingsToCloud(true);
     }
@@ -2174,7 +2404,6 @@ async function fetchSettingsFromCloud() {
     if (cloudSettings) {
         const localUpdatedAt = Number(AppState.settings?._settingsUpdatedAt || 0);
         const cloudUpdatedAt = Number(cloudSettings?._settingsUpdatedAt || 0);
-        // Never let stale cloud settings overwrite newer local edits that are still pending sync
         if (!hasPendingSettingsSync() && (cloudUpdatedAt >= localUpdatedAt || localUpdatedAt === 0)) {
             AppState.settings = mergeSettingsSafely(AppState.settings, cloudSettings, true);
             persistLocalSettingsCache();
@@ -2204,6 +2433,7 @@ async function sendSettingsPayloadToAppsScript(scriptUrl, actionName, settingsPa
         statuses: settingsPayload.statuses,
         enableResponderClipboard: !!settingsPayload.enableResponderClipboard,
         endorsementForm: settingsPayload.endorsementForm,
+        reportColumns: settingsPayload.reportColumns,
         reportConfig: settingsPayload.reportConfig,
         preferences: settingsPayload.preferences,
         notifications: settingsPayload.notifications,
@@ -2515,8 +2745,166 @@ document.addEventListener('click', (e) => {
     }
 });
 
+/* ============================================================================
+   REPORT SIGNATORY BLOCK OPTIONS (SUPERADMIN SETTINGS)
+   ============================================================================ */
+
+function ensureReportSignatoriesConfigured() {
+    if (!Array.isArray(AppState.settings.reportSignatories) || AppState.settings.reportSignatories.length === 0) {
+        const cfg = AppState.settings.reportConfig || {};
+        AppState.settings.reportSignatories = [
+            {
+                id: "SIG_1",
+                blockLabel: "Prepared By",
+                name: String(currentUser.name || REPORT_SIGNATORIES[0].name).toUpperCase(),
+                designation: REPORT_SIGNATORIES[0].designation
+            },
+            {
+                id: "SIG_2",
+                blockLabel: "Reviewed By",
+                name: REPORT_SIGNATORIES[2].name,
+                designation: REPORT_SIGNATORIES[2].designation
+            },
+            {
+                id: "SIG_3",
+                blockLabel: "Approved By",
+                name: cfg.notedName || "MARY MAY M. JACOB",
+                designation: cfg.notedDesig || "Head, LTO COMMS/CPAO"
+            }
+        ];
+    }
+    return AppState.settings.reportSignatories;
+}
+
+function renderReportSignatoriesTable() {
+    const tbody = document.getElementById("tableReportSignatoriesBody");
+    if (!tbody) return;
+    const list = ensureReportSignatoriesConfigured();
+
+    tbody.innerHTML = list.map((sig, idx) => `
+        <tr class="hover:bg-slate-800/40 transition">
+            <td><span class="chip-pill">${escapeHtml(sig.blockLabel || "Signatory")}</span></td>
+            <td class="font-bold text-white uppercase">${escapeHtml(sig.name || "")}</td>
+            <td class="text-sky-300">${escapeHtml(sig.designation || "")}</td>
+            <td class="text-center space-x-1 whitespace-nowrap">
+                <button type="button" onclick="moveReportSignatory(${idx}, -1)" ${idx === 0 ? "disabled" : ""} class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold cursor-pointer">▲</button>
+                <button type="button" onclick="moveReportSignatory(${idx}, 1)" ${idx === list.length - 1 ? "disabled" : ""} class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold cursor-pointer">▼</button>
+            </td>
+            <td class="text-center space-x-1 whitespace-nowrap">
+                <button type="button" onclick="openSignatoryModal(${idx})" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold cursor-pointer">✏️ Edit</button>
+                <button type="button" onclick="deleteReportSignatory(${idx})" class="px-2.5 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded text-[10px] font-bold cursor-pointer">🗑️</button>
+            </td>
+        </tr>
+    `).join("");
+}
+
+function openSignatoryModal(index = null) {
+    const modal = document.getElementById("signatoryModal");
+    if (!modal) return;
+    const list = ensureReportSignatoriesConfigured();
+
+    if (index !== null && index !== undefined && list[index]) {
+        const s = list[index];
+        document.getElementById("editSignatoryIndex").value = String(index);
+        document.getElementById("signatoryModalTitle").textContent = "Edit Report Signatory";
+        document.getElementById("sigBlockLabelInput").value = s.blockLabel || "Approved By";
+        document.getElementById("sigFullNameInput").value = s.name || "";
+        document.getElementById("sigDesignationInput").value = s.designation || "";
+    } else {
+        document.getElementById("editSignatoryIndex").value = "";
+        document.getElementById("signatoryModalTitle").textContent = "Add Report Signatory";
+        document.getElementById("sigBlockLabelInput").value = "Noted By";
+        document.getElementById("sigFullNameInput").value = "";
+        document.getElementById("sigDesignationInput").value = "";
+    }
+    modal.style.display = "flex";
+}
+
+function closeSignatoryModal() {
+    const modal = document.getElementById("signatoryModal");
+    if (modal) modal.style.display = "none";
+}
+
+async function saveSignatoryForm(e) {
+    e.preventDefault();
+    const list = ensureReportSignatoriesConfigured();
+    const idxStr = document.getElementById("editSignatoryIndex")?.value ?? "";
+    const blockLabel = (document.getElementById("sigBlockLabelInput")?.value || "Signatory").trim();
+    const name = (document.getElementById("sigFullNameInput")?.value || "").trim().toUpperCase();
+    const designation = (document.getElementById("sigDesignationInput")?.value || "").trim();
+    if (!name || !designation) return;
+
+    const item = {
+        id: idxStr !== "" && list[parseInt(idxStr, 10)] ? list[parseInt(idxStr, 10)].id : ("SIG_" + Date.now()),
+        blockLabel,
+        name,
+        designation
+    };
+
+    if (idxStr !== "" && list[parseInt(idxStr, 10)]) {
+        list[parseInt(idxStr, 10)] = item;
+    } else {
+        list.push(item);
+    }
+
+    syncApprovedByFromSignatories(list);
+    persistLocalSettingsCache();
+    renderReportSignatoriesTable();
+    closeSignatoryModal();
+    await saveAllSettingsToCloud(true);
+    if (document.getElementById("viewReports")?.style.display !== "none") {
+        generateReport();
+    }
+    showToast("Report signatory saved.");
+}
+
+async function moveReportSignatory(index, delta) {
+    const list = ensureReportSignatoriesConfigured();
+    const target = index + delta;
+    if (target < 0 || target >= list.length) return;
+    const temp = list[index];
+    list[index] = list[target];
+    list[target] = temp;
+    syncApprovedByFromSignatories(list);
+    persistLocalSettingsCache();
+    renderReportSignatoriesTable();
+    await saveAllSettingsToCloud(true);
+    if (document.getElementById("viewReports")?.style.display !== "none") {
+        generateReport();
+    }
+}
+
+async function deleteReportSignatory(index) {
+    const list = ensureReportSignatoriesConfigured();
+    if (list.length <= 1) {
+        showSystemAlert("At Least One Signatory Required", "Keep at least one signatory in the report signatory block.", "⚠️");
+        return;
+    }
+    showSystemConfirm("Remove Signatory", "Remove this signatory from the report signatory block?", async () => {
+        list.splice(index, 1);
+        syncApprovedByFromSignatories(list);
+        persistLocalSettingsCache();
+        renderReportSignatoriesTable();
+        await saveAllSettingsToCloud(true);
+        if (document.getElementById("viewReports")?.style.display !== "none") {
+            generateReport();
+        }
+        showToast("Signatory removed.");
+    });
+}
+
+function syncApprovedByFromSignatories(list) {
+    if (!Array.isArray(list) || list.length === 0) return;
+    const lastSig = list[list.length - 1];
+    if (!AppState.settings.reportConfig) AppState.settings.reportConfig = {};
+    AppState.settings.reportConfig.notedName = lastSig.name;
+    AppState.settings.reportConfig.notedDesig = lastSig.designation;
+}
+
 function renderSettingsTables() {
     ensureCategoryGroupsInitialized();
+    renderReportSignatoriesTable();
+
     const qPlat = (document.getElementById('searchSettingsPlatforms')?.value || '').toLowerCase().trim();
     const qCat = (document.getElementById('searchSettingsCategories')?.value || '').toLowerCase().trim();
     const qType = (document.getElementById('searchSettingsTicketTypes')?.value || '').toLowerCase().trim();
@@ -2639,6 +3027,16 @@ function renderSettingsTables() {
             ttBody.innerHTML = `<tr><td colspan="2" class="text-center text-slate-500 italic py-4">No matching classifications found.</td></tr>`;
         }
     }
+}
+
+function togglePlatformAutoGen(idx) {
+    const p = AppState.settings.platforms[idx];
+    if (!p || typeof p === 'string') return;
+    p.autoGen = !p.autoGen;
+    persistLocalSettingsCache();
+    renderSettingsTables();
+    markSettingsDirty(true);
+    saveAllSettingsToCloud(true);
 }
 
 document.addEventListener('click', (e) => {
@@ -3620,6 +4018,491 @@ function buildReportPageHeaderHtml(cfg, startISO, endISO, overallEfficiency, res
     `;
 }
 
+function populateReportFilterDropdowns() {
+    ensureCategoryGroupsInitialized();
+    const catSel = document.getElementById('repFilterCategory');
+    const platSel = document.getElementById('repFilterPlatform');
+    if (catSel) {
+        const curCat = catSel.value;
+        catSel.innerHTML = '<option value="">All Categories</option>';
+        CATEGORY_GROUPS.forEach(grp => {
+            const items = AppState.settings.categoryGroups[grp] || [];
+            if (items.length > 0) {
+                const og = document.createElement('optgroup');
+                og.label = grp;
+                items.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c;
+                    opt.textContent = c;
+                    og.appendChild(opt);
+                });
+                catSel.appendChild(og);
+            }
+        });
+        if (curCat) catSel.value = curCat;
+    }
+    if (platSel) {
+        const curPlat = platSel.value;
+        platSel.innerHTML = '<option value="">All Platforms</option>';
+        (AppState.settings.platforms || []).forEach(p => {
+            const name = typeof p === 'string' ? p : p.name;
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            platSel.appendChild(opt);
+        });
+        if (curPlat) platSel.value = curPlat;
+    }
+}
+
+function buildPortalCategoryPieChartHtml(topConcernsList, totalCount) {
+    const palette = ["#1d4ed8", "#0d9488", "#d97706", "#059669", "#4f46e5", "#0284c7", "#b45309", "#0f766e", "#2563eb", "#475569"];
+    const items = Array.isArray(topConcernsList) ? topConcernsList.slice(0, 10) : [];
+    const sumTop10 = items.reduce((acc, item) => acc + item.count, 0);
+
+    if (!items.length || sumTop10 <= 0) {
+        return `<p class="text-xs text-slate-500 italic py-4">No concern/issue data available for the selected filters.</p>`;
+    }
+
+    let currentDeg = 0;
+    const segments = items.map((item, idx) => {
+        const pct = (item.count / sumTop10) * 100;
+        const nextDeg = idx === items.length - 1 ? 360 : currentDeg + (pct / 100) * 360;
+        const color = palette[idx % palette.length];
+        const segStr = `${color} ${currentDeg.toFixed(2)}deg ${nextDeg.toFixed(2)}deg`;
+        currentDeg = nextDeg;
+        return {
+            concern: item.concern,
+            count: item.count,
+            shareOfTop10: pct.toFixed(1),
+            shareOfPeriod: totalCount > 0 ? ((item.count / totalCount) * 100).toFixed(1) : "0.0",
+            color,
+            segStr
+        };
+    });
+
+    const gradientCss = `conic-gradient(${segments.map(s => s.segStr).join(", ")})`;
+    const legendHtml = segments.map((s, idx) => `
+        <div class="flex items-center justify-between gap-2 py-1 border-b border-slate-100 text-[11px]">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="w-3 h-3 rounded-sm shrink-0" style="background:${s.color};"></span>
+                <span class="font-semibold text-slate-900 truncate" title="${escapeHtml(s.concern)}">${idx + 1}. ${escapeHtml(s.concern)}</span>
+            </div>
+            <span class="font-mono font-bold text-slate-800 shrink-0">${s.count} (${s.shareOfTop10}%)</span>
+        </div>
+    `).join("");
+
+    return `
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+            <div class="md:col-span-5 flex flex-col items-center justify-center py-2">
+                <div style="width:170px;height:170px;border-radius:9999px;background:${gradientCss};border:2px solid #cbd5e1;box-shadow:0 4px 12px rgba(15,23,42,0.08);"></div>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mt-2">Top ${items.length} Concerns (${sumTop10} items)</span>
+            </div>
+            <div class="md:col-span-7 space-y-0.5">
+                ${legendHtml}
+            </div>
+        </div>
+    `;
+}
+
+function resolveEndorsedRegionLabel(ticket) {
+    const actionStr = String(ticket?.actionTaken || "");
+    const remarksStr = String(ticket?.remarks || "");
+    const combined = `${actionStr} ${remarksStr}`.toLowerCase();
+
+    for (const d of (AppState.directory || [])) {
+        const code = String(d.code || "").trim().toLowerCase();
+        const office = String(d.office || "").trim().toLowerCase();
+        if (code && new RegExp(`\b${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`, 'i').test(combined)) {
+            return `${d.office} (${d.code})`;
+        }
+        if (office && combined.includes(office)) {
+            return `${d.office} (${d.code})`;
+        }
+    }
+
+    const regMatch = combined.match(/region\s*(4-?a|4-?b|iv-?a|iv-?b|xiii|caraga|ncr|nir|[0-9]{1,2})/i);
+    if (regMatch) {
+        return `Regional Office ${regMatch[1].toUpperCase()}`;
+    }
+
+    if (combined.includes("endorse")) {
+        return "Other Endorsed Office";
+    }
+    return "";
+}
+
+function generateReport() {
+    if (!canUserGenerateReports()) return;
+    setReportPreviewEditState(false);
+    ensureCategoryGroupsInitialized();
+    populateReportFilterDropdowns();
+
+    const rc = getReportColumnsConfig();
+    const startISO = document.getElementById('repStartDate')?.value || '';
+    const endISO = document.getElementById('repEndDate')?.value || '';
+    const filterCat = document.getElementById('repFilterCategory')?.value || '';
+    const filterPlat = document.getElementById('repFilterPlatform')?.value || '';
+
+    const filtered = (AppState.tickets || []).filter(t => {
+        if (!t.dateReceived) return false;
+        const iso = mmddyyyyToISO(t.dateReceived);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+        if (startISO && iso < startISO) return false;
+        if (endISO && iso > endISO) return false;
+        if (filterCat && String(t.category || '').trim() !== filterCat) return false;
+        if (filterPlat && String(t.platform || '').trim().toUpperCase() !== filterPlat.toUpperCase()) return false;
+        return true;
+    });
+
+    const totalReceived = filtered.length;
+    const resolvedCount = filtered.filter(t => String(t.status || '').trim().toLowerCase() === 'closed').length;
+    const pendingCount = totalReceived - resolvedCount;
+    const overallEfficiency = totalReceived > 0 ? ((resolvedCount / totalReceived) * 100).toFixed(1) : "0.0";
+
+    // Portals list (configured + any extra found in filtered tickets)
+    const portalSet = [];
+    (AppState.settings.platforms || []).forEach(p => {
+        const name = String(typeof p === 'string' ? p : p.name).trim().toUpperCase();
+        if (name && !portalSet.includes(name)) portalSet.push(name);
+    });
+    filtered.forEach(t => {
+        const p = String(t.platform || 'OTHER').trim().toUpperCase();
+        if (p && !portalSet.includes(p)) portalSet.push(p);
+    });
+
+    // 1. Top 10 concerns / issues
+    const concernCounts = {};
+    filtered.forEach(t => {
+        const concernLabel = String(t.category || '').trim() || "Unspecified Concern";
+        concernCounts[concernLabel] = (concernCounts[concernLabel] || 0) + 1;
+    });
+    const top10Concerns = Object.entries(concernCounts)
+        .map(([concern, count]) => ({ concern, count }))
+        .sort((a, b) => b.count - a.count || a.concern.localeCompare(b.concern))
+        .slice(0, 10);
+
+    const top10RowsHtml = top10Concerns.length > 0
+        ? top10Concerns.map((item, idx) => {
+            const pct = totalReceived > 0 ? ((item.count / totalReceived) * 100).toFixed(1) : "0.0";
+            return `
+                <tr>
+                    <td class="font-mono font-bold text-center">${idx + 1}</td>
+                    <td class="font-semibold">${escapeHtml(item.concern)}</td>
+                    <td class="font-mono font-bold text-right">${item.count} (${pct}%)</td>
+                </tr>
+            `;
+        }).join('')
+        : `<tr><td colspan="3" class="text-center text-slate-500 italic">No concern/issue records for the selected period.</td></tr>`;
+
+    // 2. SUMMARY OF ISSUES / CONCERNS AND OTHER VARIABLES PER PORTAL (by CATEGORY_GROUPS & categories)
+    const catPortalMatrix = {};
+    CATEGORY_GROUPS.forEach(grp => {
+        const configuredCats = AppState.settings.categoryGroups[grp] || [];
+        const extraCatsInGroup = [];
+        filtered.forEach(t => {
+            const tCat = String(t.category || '').trim();
+            if (!tCat) return;
+            if (getGroupForCategory(tCat) === grp) {
+                const exists = configuredCats.some(c => c.toLowerCase() === tCat.toLowerCase()) ||
+                               extraCatsInGroup.some(c => c.toLowerCase() === tCat.toLowerCase());
+                if (!exists) extraCatsInGroup.push(tCat);
+            }
+        });
+        const allCatsForGroup = Array.from(new Set([...configuredCats, ...extraCatsInGroup]));
+        catPortalMatrix[grp] = allCatsForGroup.map(catName => {
+            const perPortal = {};
+            let rowTotal = 0;
+            portalSet.forEach(pName => {
+                const cnt = filtered.filter(t =>
+                    String(t.category || '').trim().toLowerCase() === catName.toLowerCase() &&
+                    String(t.platform || 'OTHER').trim().toUpperCase() === pName
+                ).length;
+                perPortal[pName] = cnt;
+                rowTotal += cnt;
+            });
+            return { category: catName, perPortal, total: rowTotal };
+        });
+    });
+
+    const portalHeaderCellsHtml = portalSet.map(p => `<th class="text-center">${escapeHtml(p)}</th>`).join('');
+    let catPortalBodyHtml = '';
+    const groupTotalsPerPortal = {};
+    portalSet.forEach(p => { groupTotalsPerPortal[p] = 0; });
+    let grandCatTotal = 0;
+
+    CATEGORY_GROUPS.forEach(grp => {
+        const rows = catPortalMatrix[grp] || [];
+        catPortalBodyHtml += `
+            <tr class="report-group-row">
+                <td colspan="${portalSet.length + 3}">${escapeHtml(grp)}</td>
+            </tr>
+        `;
+        if (rows.length === 0) {
+            catPortalBodyHtml += `
+                <tr>
+                    <td class="text-slate-600">${escapeHtml(grp)}</td>
+                    <td class="italic text-slate-500">No categories configured under this group</td>
+                    ${portalSet.map(() => `<td class="text-center font-mono text-slate-400">0</td>`).join('')}
+                    <td class="text-center font-mono font-bold">0</td>
+                </tr>
+            `;
+        } else {
+            rows.forEach(r => {
+                grandCatTotal += r.total;
+                const cellsHtml = portalSet.map(p => {
+                    const v = r.perPortal[p] || 0;
+                    groupTotalsPerPortal[p] += v;
+                    return `<td class="text-center font-mono ${v > 0 ? 'font-bold text-slate-900' : 'text-slate-400'}">${v}</td>`;
+                }).join('');
+                catPortalBodyHtml += `
+                    <tr>
+                        <td class="text-slate-600 font-medium">${escapeHtml(grp)}</td>
+                        <td class="font-semibold text-slate-900">${escapeHtml(r.category)}</td>
+                        ${cellsHtml}
+                        <td class="text-center font-mono font-extrabold text-blue-900">${r.total}</td>
+                    </tr>
+                `;
+            });
+        }
+    });
+
+    catPortalBodyHtml += `
+        <tr class="report-total-row">
+            <td colspan="2">TOTAL ACROSS ALL CONCERN GROUPS</td>
+            ${portalSet.map(p => `<td class="text-center font-mono">${groupTotalsPerPortal[p] || 0}</td>`).join('')}
+            <td class="text-center font-mono">${grandCatTotal}</td>
+        </tr>
+    `;
+
+    // 3. SUMMARY OF ISSUES / CONCERNS AND OTHER VARIABLES PER PORTAL: ACKNOWLEDGED, RESOLVED, PENDING, RESPONSE RATE (%)
+    let totalAck = 0;
+    let totalRes = 0;
+    let totalPend = 0;
+
+    const portalStatusRowsHtml = portalSet.map(pName => {
+        const pTickets = filtered.filter(t => String(t.platform || 'OTHER').trim().toUpperCase() === pName);
+        const ack = pTickets.length;
+        const res = pTickets.filter(t => String(t.status || '').trim().toLowerCase() === 'closed').length;
+        const pend = ack - res;
+        const rate = ack > 0 ? ((res / ack) * 100).toFixed(1) : "0.0";
+        totalAck += ack;
+        totalRes += res;
+        totalPend += pend;
+        return `
+            <tr>
+                <td class="font-bold text-slate-900">${escapeHtml(pName)}</td>
+                <td class="text-center font-mono font-bold">${ack}</td>
+                <td class="text-center font-mono font-bold text-emerald-800">${res}</td>
+                <td class="text-center font-mono font-bold text-rose-700">${pend}</td>
+                <td class="text-center font-mono font-extrabold text-blue-900">${rate}%</td>
+            </tr>
+        `;
+    }).join('');
+
+    const totalPortalRate = totalAck > 0 ? ((totalRes / totalAck) * 100).toFixed(1) : "0.0";
+    portalStatusRowsHtml += `
+        <tr class="report-total-row">
+            <td>TOTAL</td>
+            <td class="text-center font-mono">${totalAck}</td>
+            <td class="text-center font-mono">${totalRes}</td>
+            <td class="text-center font-mono">${totalPend}</td>
+            <td class="text-center font-mono">${totalPortalRate}%</td>
+        </tr>
+    `;
+
+    // 4. TOTAL CONCERNS ENDORSED TO REGIONAL OFFICES
+    const regMap = {};
+    filtered.forEach(t => {
+        const regionLabel = resolveEndorsedRegionLabel(t);
+        if (!regionLabel) return;
+        if (!regMap[regionLabel]) {
+            regMap[regionLabel] = { office: regionLabel, total: 0, resolved: 0, pending: 0 };
+        }
+        regMap[regionLabel].total++;
+        const isClosed = String(t.status || '').trim().toLowerCase() === 'closed';
+        if (isClosed) regMap[regionLabel].resolved++;
+        else regMap[regionLabel].pending++;
+    });
+
+    const endorsedRows = Object.values(regMap).sort((a, b) => b.total - a.total || a.office.localeCompare(b.office));
+    let regGrandTotal = 0;
+    let regGrandRes = 0;
+    let regGrandPend = 0;
+
+    const regionalRowsHtml = endorsedRows.length > 0
+        ? endorsedRows.map(r => {
+            regGrandTotal += r.total;
+            regGrandRes += r.resolved;
+            regGrandPend += r.pending;
+            return `
+                <tr>
+                    <td class="font-bold text-slate-900">${escapeHtml(r.office)}</td>
+                    <td class="text-center font-mono font-extrabold text-blue-900">${r.total}</td>
+                    <td class="text-center font-mono font-bold text-emerald-800">${r.resolved}</td>
+                    <td class="text-center font-mono font-bold text-rose-700">${r.pending}</td>
+                </tr>
+            `;
+        }).join('') + `
+            <tr class="report-total-row">
+                <td>TOTAL ENDORSED TO REGIONAL OFFICES</td>
+                <td class="text-center font-mono">${regGrandTotal}</td>
+                <td class="text-center font-mono">${regGrandRes}</td>
+                <td class="text-center font-mono">${regGrandPend}</td>
+            </tr>
+        `
+        : `<tr><td colspan="4" class="text-center text-slate-500 italic">No regional office endorsements recorded in this period.</td></tr>`;
+
+    // Platform volume breakdown chart
+    const platCounts = {};
+    filtered.forEach(t => {
+        const p = String(t.platform || 'OTHER').trim().toUpperCase();
+        platCounts[p] = (platCounts[p] || 0) + 1;
+    });
+    const maxPlatCount = Math.max(1, ...Object.values(platCounts));
+    const platBarsHtml = Object.entries(platCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([plat, cnt]) => {
+            const pct = ((cnt / maxPlatCount) * 100).toFixed(1);
+            const fillHex = resolveBarFillHex("bg-blue-600");
+            return `
+                <div class="report-bar-row">
+                    <div class="report-bar-label">${escapeHtml(plat)}</div>
+                    <div class="report-bar-track"><div class="report-bar-fill" style="width:${pct}%;background:${fillHex};"></div></div>
+                    <div class="report-bar-value">${cnt} (${totalReceived > 0 ? ((cnt / totalReceived) * 100).toFixed(1) : "0.0"}%)</div>
+                </div>
+            `;
+        }).join('') || `<p class="text-xs text-slate-500 italic">No platform volume data in this period.</p>`;
+
+    // Signatory block rendered from configured reportSignatories
+    const sigList = ensureReportSignatoriesConfigured();
+    const sigColsClass = sigList.length <= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-3";
+    const signatoriesBlockHtml = sigList.map(sig => `
+        <div class="text-center border border-slate-200 rounded-lg p-3 bg-slate-50/60">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-8 text-left">${escapeHtml(sig.blockLabel || "Signatory")}:</p>
+            <p class="font-extrabold text-xs uppercase text-slate-900 border-t border-slate-400 pt-1.5">${escapeHtml(sig.name || "")}</p>
+            <p class="text-[11px] text-slate-700 mt-0.5">${escapeHtml(sig.designation || "")}</p>
+        </div>
+    `).join("");
+
+    const cfg = AppState.settings.reportConfig || {};
+    const headerHtml = buildReportPageHeaderHtml(cfg, startISO, endISO, overallEfficiency, resolvedCount, totalReceived, cfg.title || "EXECUTIVE RESOLUTION & PORTAL PERFORMANCE REPORT");
+    const pieHtml = buildPortalCategoryPieChartHtml(top10Concerns, totalReceived);
+
+    const docEl = document.getElementById('printableReportDocument');
+    if (!docEl) return;
+
+    docEl.innerHTML = `
+        ${headerHtml}
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="border border-slate-300 rounded-lg p-3 bg-slate-50">
+                <p class="text-[10px] font-bold uppercase text-slate-500">Total Tickets</p>
+                <p class="text-xl font-extrabold text-slate-900 font-mono mt-0.5">${totalReceived}</p>
+            </div>
+            <div class="border border-emerald-300 rounded-lg p-3 bg-emerald-50/60">
+                <p class="text-[10px] font-bold uppercase text-emerald-700">Resolved / Closed</p>
+                <p class="text-xl font-extrabold text-emerald-800 font-mono mt-0.5">${resolvedCount}</p>
+            </div>
+            <div class="border border-rose-300 rounded-lg p-3 bg-rose-50/60">
+                <p class="text-[10px] font-bold uppercase text-rose-700">Pending</p>
+                <p class="text-xl font-extrabold text-rose-800 font-mono mt-0.5">${pendingCount}</p>
+            </div>
+            <div class="border border-blue-300 rounded-lg p-3 bg-blue-50/60">
+                <p class="text-[10px] font-bold uppercase text-blue-700">Resolution Rate</p>
+                <p class="text-xl font-extrabold text-blue-900 font-mono mt-0.5">${overallEfficiency}%</p>
+            </div>
+        </div>
+
+        <!-- 1. TOP 10 CONCERNS / ISSUES -->
+        <div class="report-chart-card space-y-3">
+            <h4 class="report-chart-title">${escapeHtml(rc.hdrTop10)}</h4>
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                <div class="lg:col-span-6 overflow-x-auto">
+                    <table class="report-summary-table">
+                        <thead>
+                            <tr>
+                                <th class="w-14 text-center">${escapeHtml(rc.colTopRank)}</th>
+                                <th>${escapeHtml(rc.colTopConcern)}</th>
+                                <th class="w-28 text-right">${escapeHtml(rc.colTopCount)}</th>
+                            </tr>
+                        </thead>
+                        <tbody>${top10RowsHtml}</tbody>
+                    </table>
+                </div>
+                <div class="lg:col-span-6">${pieHtml}</div>
+            </div>
+        </div>
+
+        <!-- 2. SUMMARY OF ISSUES / CONCERNS AND OTHER VARIABLES PER PORTAL (CATEGORIES BY GROUP) -->
+        <div class="report-chart-card space-y-2">
+            <h4 class="report-chart-title">${escapeHtml(rc.hdrCategoryPortal)}</h4>
+            <div class="overflow-x-auto">
+                <table class="report-summary-table">
+                    <thead>
+                        <tr>
+                            <th>${escapeHtml(rc.colCatGroup)}</th>
+                            <th>${escapeHtml(rc.colCatName)}</th>
+                            ${portalHeaderCellsHtml}
+                            <th class="text-center">${escapeHtml(rc.colCatTotal)}</th>
+                        </tr>
+                    </thead>
+                    <tbody>${catPortalBodyHtml}</tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 3. SUMMARY PER PORTAL: ACKNOWLEDGED, RESOLVED, PENDING, RESPONSE RATE (%) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div class="lg:col-span-7 report-chart-card space-y-2">
+                <h4 class="report-chart-title">${escapeHtml(rc.hdrPortalStatus)}</h4>
+                <div class="overflow-x-auto">
+                    <table class="report-summary-table">
+                        <thead>
+                            <tr>
+                                <th>${escapeHtml(rc.colPortalName)}</th>
+                                <th class="text-center">${escapeHtml(rc.colAck)}</th>
+                                <th class="text-center">${escapeHtml(rc.colRes)}</th>
+                                <th class="text-center">${escapeHtml(rc.colPend)}</th>
+                                <th class="text-center">${escapeHtml(rc.colRate)}</th>
+                            </tr>
+                        </thead>
+                        <tbody>${portalStatusRowsHtml}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="lg:col-span-5 report-chart-card">
+                <h4 class="report-chart-title">Portal Volume Distribution</h4>
+                ${platBarsHtml}
+            </div>
+        </div>
+
+        <!-- 4. TOTAL CONCERNS ENDORSED TO REGIONAL OFFICES -->
+        <div class="report-chart-card space-y-2">
+            <h4 class="report-chart-title">${escapeHtml(rc.hdrRegionalEndorsed)}</h4>
+            <div class="overflow-x-auto">
+                <table class="report-summary-table">
+                    <thead>
+                        <tr>
+                            <th>${escapeHtml(rc.colRegOffice)}</th>
+                            <th class="text-center">${escapeHtml(rc.colRegTotal)}</th>
+                            <th class="text-center">${escapeHtml(rc.colRegResolved)}</th>
+                            <th class="text-center">${escapeHtml(rc.colRegPending)}</th>
+                        </tr>
+                    </thead>
+                    <tbody>${regionalRowsHtml}</tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="pt-4 mt-auto">
+            <div class="grid ${sigColsClass} gap-4">
+                ${signatoriesBlockHtml}
+            </div>
+        </div>
+    `;
+}
+
 function exportReportCSV() {
     if (!canUserGenerateReports()) return;
     const startISO = document.getElementById('repStartDate').value;
@@ -4000,1449 +4883,144 @@ function generateAccomplishmentReport() {
 }
 
 function printAccomplishmentReport() {
-    if (!document.getElementById('printableAccomplishmentDocument')) generateAccomplishmentReport();
+    const docEl = document.getElementById('printableAccomplishmentDocument');
+    if (!docEl || !docEl.innerHTML.trim()) generateAccomplishmentReport();
     if (isAccomplishmentPreviewEditing) setAccomplishmentPreviewEditState(false);
+    const previewHtml = document.getElementById('accomplishmentReportContainer')?.innerHTML || '';
+    const target = document.getElementById('endorseLetterPrintArea');
+    if (target && previewHtml) {
+        target.dataset.prevHtml = target.innerHTML;
+        target.dataset.prevClass = target.className;
+        target.className = 'w-full max-w-[1120px]';
+        target.innerHTML = previewHtml;
+    }
     document.body.classList.add('printing-accomplishment');
     setTimeout(() => {
         window.print();
-        setTimeout(() => document.body.classList.remove('printing-accomplishment'), 400);
-    }, 150);
-}
-
-function populateEndorseChiefDropdown(regionIdx, preferredName = "") {
-    const chiefSel = document.getElementById('endChiefNameSelect');
-    if (!chiefSel) return;
-
-    const officials = getRegionOfficialsList(regionIdx);
-    const entry = AppState.directory[regionIdx];
-
-    if (officials.length > 0) {
-        chiefSel.innerHTML = officials.map((off, idx) => {
-            const rankLabel = off.roleRank ? `[${off.roleRank}] ` : '';
-            return `<option value="${idx}">${escapeHtml(rankLabel + (off.name || ''))}</option>`;
-        }).join('');
-
-        let selectedOffIdx = 0;
-        if (preferredName) {
-            const matched = officials.findIndex(o => String(o.name || '').trim().toLowerCase() === String(preferredName).trim().toLowerCase());
-            if (matched >= 0) selectedOffIdx = matched;
-        }
-        chiefSel.value = String(selectedOffIdx);
-        onEndorseChiefDropdownChange(String(selectedOffIdx));
-    } else if (entry && entry.chief) {
-        chiefSel.innerHTML = `<option value="-1">[Regional Director] ${escapeHtml(entry.chief)}</option>`;
-        chiefSel.value = "-1";
-        document.getElementById('endChiefName').value = entry.chief || "";
-        document.getElementById('endPosition').value = entry.position || "Regional Director";
-        if (entry.email) document.getElementById('endEmailAddress').value = entry.email;
-    } else {
-        chiefSel.innerHTML = `<option value="">-- No Official Listed --</option>`;
-    }
-}
-
-function onEndorseChiefDropdownChange(selectedVal) {
-    const regionIdx = parseInt(document.getElementById('endOfficeSelect')?.value || '0', 10);
-    const entry = AppState.directory[regionIdx];
-    const officials = getRegionOfficialsList(regionIdx);
-    const parsedIdx = parseInt(selectedVal, 10);
-
-    if (!isNaN(parsedIdx) && parsedIdx >= 0 && officials[parsedIdx]) {
-        const off = officials[parsedIdx];
-        document.getElementById('endChiefName').value = off.name || "";
-        if (off.position) document.getElementById('endPosition').value = off.position;
-        if (off.email) document.getElementById('endEmailAddress').value = off.email;
-    } else if (entry) {
-        document.getElementById('endChiefName').value = entry.chief || "";
-        if (entry.position) document.getElementById('endPosition').value = entry.position;
-        if (entry.email) document.getElementById('endEmailAddress').value = entry.email;
-    }
-}
-
-let endorseAttachmentsList = [];
-let endorseAttachmentArrangeMode = "custom";
-let endorseAttachmentLayoutMode = "page_per_item";
-let endorsePreviewPages = [];
-let endorseShowAttachmentLabels = true;
-let draggedEndorseAttachmentIndex = null;
-
-function isSupportedEndorseFile(file) {
-    if (!file) return false;
-    const type = String(file.type || "").toLowerCase();
-    const name = String(file.name || "").toLowerCase();
-    if (type === "application/pdf" || name.endsWith(".pdf")) return true;
-    if (type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)) return true;
-    return false;
-}
-
-function getEndorseFileKind(file) {
-    const type = String(file?.type || "").toLowerCase();
-    const name = String(file?.name || "").toLowerCase();
-    return (type === "application/pdf" || name.endsWith(".pdf")) ? "pdf" : "image";
-}
-
-function formatReadableFileSize(bytes) {
-    const num = Number(bytes || 0);
-    if (num < 1024) return `${num} B`;
-    if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
-    return `${(num / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function triggerEndorseFilePicker() {
-    const fileInput = document.getElementById("endAttachmentFiles");
-    if (fileInput) fileInput.click();
-}
-
-function handleEndorseDragOver(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const dz = document.getElementById("endAttachmentDropzone");
-    if (dz) dz.classList.add("border-sky-400", "bg-sky-950/30");
-}
-
-function handleEndorseDragLeave(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const dz = document.getElementById("endAttachmentDropzone");
-    if (dz) dz.classList.remove("border-sky-400", "bg-sky-950/30");
-}
-
-function handleEndorseFilesDrop(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const dz = document.getElementById("endAttachmentDropzone");
-    if (dz) dz.classList.remove("border-sky-400", "bg-sky-950/30");
-    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        addFilesToEndorseAttachments(e.dataTransfer.files);
-    }
-}
-
-function handleEndorseFilesSelected(e) {
-    const files = e?.target?.files;
-    if (files && files.length > 0) {
-        addFilesToEndorseAttachments(files);
-    }
-    if (e && e.target) {
-        e.target.value = "";
-    }
-}
-
-async function inspectPdfPageCount(file) {
-    try {
-        if (!window.pdfjsLib) return null;
-        const arrayBuffer = await file.arrayBuffer();
-        const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        return pdfDoc ? pdfDoc.numPages : null;
-    } catch (err) {
-        return null;
-    }
-}
-
-function addFilesToEndorseAttachments(fileList) {
-    const incoming = Array.from(fileList || []);
-    if (!incoming.length) return;
-
-    let addedCount = 0;
-    let skippedCount = 0;
-
-    incoming.forEach((file) => {
-        if (!isSupportedEndorseFile(file)) {
-            skippedCount++;
-            return;
-        }
-        const kind = getEndorseFileKind(file);
-        const item = {
-            id: "att_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
-            file: file,
-            name: file.name || (kind === "pdf" ? "Document.pdf" : "Image.png"),
-            size: file.size || 0,
-            kind: kind,
-            mimeType: file.type || (kind === "pdf" ? "application/pdf" : "image/png"),
-            previewUrl: "",
-            pageCount: null
-        };
-        endorseAttachmentsList.push(item);
-        addedCount++;
-
-        if (kind === "image") {
-            const reader = new FileReader();
-            reader.onload = (evt) => {
-                item.previewUrl = evt.target.result;
-                renderEndorseAttachmentList();
-            };
-            reader.readAsDataURL(file);
-        } else if (kind === "pdf") {
-            inspectPdfPageCount(file).then((pages) => {
-                item.pageCount = pages;
-                renderEndorseAttachmentList();
-            });
-        }
-    });
-
-    if (endorseAttachmentArrangeMode !== "custom") {
-        applyEndorseAttachmentArrange(endorseAttachmentArrangeMode, false);
-    } else {
-        renderEndorseAttachmentList();
-    }
-
-    if (skippedCount > 0) {
-        showToast(`${addedCount} file(s) added. ${skippedCount} unsupported file(s) skipped.`);
-    } else if (addedCount > 0) {
-        showToast(`${addedCount} file(s) attached (Total: ${endorseAttachmentsList.length}).`);
-    }
-}
-
-function applyEndorseAttachmentArrange(mode, notify = true) {
-    endorseAttachmentArrangeMode = mode || "custom";
-    const sel = document.getElementById("endAttachmentArrangeMode");
-    if (sel) sel.value = endorseAttachmentArrangeMode;
-
-    if (endorseAttachmentArrangeMode === "name_asc") {
-        endorseAttachmentsList.sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: "base" }));
-    } else if (endorseAttachmentArrangeMode === "name_desc") {
-        endorseAttachmentsList.sort((a, b) => String(b.name).localeCompare(String(a.name), undefined, { numeric: true, sensitivity: "base" }));
-    } else if (endorseAttachmentArrangeMode === "images_first") {
-        endorseAttachmentsList.sort((a, b) => {
-            if (a.kind === b.kind) return 0;
-            return a.kind === "image" ? -1 : 1;
-        });
-    } else if (endorseAttachmentArrangeMode === "pdfs_first") {
-        endorseAttachmentsList.sort((a, b) => {
-            if (a.kind === b.kind) return 0;
-            return a.kind === "pdf" ? -1 : 1;
-        });
-    }
-
-    renderEndorseAttachmentList();
-    if (notify && endorseAttachmentsList.length > 1) {
-        showToast("Attachment arrangement updated.");
-    }
-}
-
-function onEndorseLayoutModeChange(mode) {
-    endorseAttachmentLayoutMode = mode || "page_per_item";
-}
-
-function moveEndorseAttachment(index, direction) {
-    if (index < 0 || index >= endorseAttachmentsList.length) return;
-    let targetIdx = index;
-    if (direction === "top") targetIdx = 0;
-    else if (direction === "up") targetIdx = Math.max(0, index - 1);
-    else if (direction === "down") targetIdx = Math.min(endorseAttachmentsList.length - 1, index + 1);
-    else if (direction === "bottom") targetIdx = endorseAttachmentsList.length - 1;
-
-    if (targetIdx === index) return;
-    const [moved] = endorseAttachmentsList.splice(index, 1);
-    endorseAttachmentsList.splice(targetIdx, 0, moved);
-
-    endorseAttachmentArrangeMode = "custom";
-    const sel = document.getElementById("endAttachmentArrangeMode");
-    if (sel) sel.value = "custom";
-    renderEndorseAttachmentList();
-}
-
-function removeEndorseAttachment(index) {
-    if (index < 0 || index >= endorseAttachmentsList.length) return;
-    endorseAttachmentsList.splice(index, 1);
-    renderEndorseAttachmentList();
-}
-
-function clearAllEndorseAttachments() {
-    endorseAttachmentsList = [];
-    const fileInput = document.getElementById("endAttachmentFiles");
-    if (fileInput) fileInput.value = "";
-    renderEndorseAttachmentList();
-    showToast("All attached files removed.");
-}
-
-function onEndorseRowDragStart(e, idx) {
-    draggedEndorseAttachmentIndex = idx;
-    if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", String(idx));
-    }
-}
-
-function onEndorseRowDragOver(e) {
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-}
-
-function onEndorseRowDrop(e, targetIdx) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (draggedEndorseAttachmentIndex === null || draggedEndorseAttachmentIndex === targetIdx) {
-        draggedEndorseAttachmentIndex = null;
-        return;
-    }
-    const [moved] = endorseAttachmentsList.splice(draggedEndorseAttachmentIndex, 1);
-    endorseAttachmentsList.splice(targetIdx, 0, moved);
-    draggedEndorseAttachmentIndex = null;
-
-    endorseAttachmentArrangeMode = "custom";
-    const sel = document.getElementById("endAttachmentArrangeMode");
-    if (sel) sel.value = "custom";
-    renderEndorseAttachmentList();
-}
-
-function onEndorseRowDragEnd() {
-    draggedEndorseAttachmentIndex = null;
-}
-
-function renderEndorseAttachmentList() {
-    const container = document.getElementById("endAttachmentListContainer");
-    const arrangeBar = document.getElementById("endAttachmentArrangeBar");
-    const clearBtn = document.getElementById("btnClearEndorseAttachments");
-    const arrangeSel = document.getElementById("endAttachmentArrangeMode");
-    const layoutSel = document.getElementById("endAttachmentLayoutMode");
-
-    if (arrangeSel) arrangeSel.value = endorseAttachmentArrangeMode || "custom";
-    if (layoutSel) layoutSel.value = endorseAttachmentLayoutMode || "page_per_item";
-
-    const hasFiles = endorseAttachmentsList.length > 0;
-    if (arrangeBar) arrangeBar.classList.toggle("hidden", !hasFiles);
-    if (clearBtn) clearBtn.classList.toggle("hidden", !hasFiles);
-
-    if (!container) return;
-    if (!hasFiles) {
-        container.innerHTML = `<p class="text-[10.5px] text-slate-500 italic text-center py-1">No files attached yet. You can attach unlimited Images and PDFs.</p>`;
-        return;
-    }
-
-    container.innerHTML = endorseAttachmentsList.map((item, idx) => {
-        const isFirst = idx === 0;
-        const isLast = idx === endorseAttachmentsList.length - 1;
-        const thumbHtml = item.kind === "pdf"
-            ? `<div class="w-10 h-10 rounded bg-rose-950 border border-rose-700/70 flex flex-col items-center justify-center shrink-0 text-rose-300 font-extrabold text-[9px]"><span>📕</span><span>PDF</span></div>`
-            : (item.previewUrl
-                ? `<img src="${item.previewUrl}" class="w-10 h-10 rounded object-cover border border-slate-700 bg-white shrink-0" />`
-                : `<div class="w-10 h-10 rounded bg-sky-950 border border-sky-700/70 flex items-center justify-center shrink-0 text-sky-300 font-extrabold text-xs">🖼️</div>`);
-
-        const metaText = item.kind === "pdf"
-            ? `PDF Document${item.pageCount ? ` • ${item.pageCount} page${item.pageCount > 1 ? "s" : ""}` : ""} • ${formatReadableFileSize(item.size)}`
-            : `Image • ${formatReadableFileSize(item.size)}`;
-
-        return `
-            <div draggable="true" ondragstart="onEndorseRowDragStart(event, ${idx})" ondragover="onEndorseRowDragOver(event)" ondrop="onEndorseRowDrop(event, ${idx})" ondragend="onEndorseRowDragEnd()" class="flex items-center justify-between gap-2 bg-slate-900 hover:bg-slate-800/80 border border-slate-800 rounded-lg p-2 cursor-grab active:cursor-grabbing transition">
-                <div class="flex items-center gap-2 min-w-0 flex-1">
-                    <span class="text-slate-500 font-mono text-xs select-none" title="Drag to reorder">⠿</span>
-                    <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono font-extrabold text-[10px] shrink-0">#${idx + 1}</span>
-                    ${thumbHtml}
-                    <div class="min-w-0 flex-1">
-                        <p class="text-[11px] font-bold text-white truncate" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</p>
-                        <p class="text-[10px] text-slate-400 font-mono">${escapeHtml(metaText)}</p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                    <button type="button" onclick="moveEndorseAttachment(${idx}, 'top')" ${isFirst ? "disabled" : ""} title="Move to Top" class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold">⤒</button>
-                    <button type="button" onclick="moveEndorseAttachment(${idx}, 'up')" ${isFirst ? "disabled" : ""} title="Move Up" class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold">↑</button>
-                    <button type="button" onclick="moveEndorseAttachment(${idx}, 'down')" ${isLast ? "disabled" : ""} title="Move Down" class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold">↓</button>
-                    <button type="button" onclick="moveEndorseAttachment(${idx}, 'bottom')" ${isLast ? "disabled" : ""} title="Move to Bottom" class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold">⤓</button>
-                    <button type="button" onclick="removeEndorseAttachment(${idx})" title="Remove File" class="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded text-[10px] font-bold ml-0.5">✕</button>
-                </div>
-            </div>
-        `;
-    }).join("");
-}
-
-function captureEndorseModalDraft() {
-    const sigChecked = document.querySelector('input[name="sigType"]:checked');
-    lastEndorseModalDraft = {
-        ticketIndex: document.getElementById('endorseTicketIndex')?.value ?? '',
-        officeSelect: document.getElementById('endOfficeSelect')?.value ?? '',
-        chiefNameSelect: document.getElementById('endChiefNameSelect')?.value ?? '',
-        chiefName: document.getElementById('endChiefName')?.value ?? '',
-        position: document.getElementById('endPosition')?.value ?? '',
-        agencyName: document.getElementById('endAgencyName')?.value ?? '',
-        emailAddress: document.getElementById('endEmailAddress')?.value ?? '',
-        officeAddress: document.getElementById('endOfficeAddress')?.value ?? '',
-        complainantName: document.getElementById('endComplainantName')?.value ?? '',
-        complainantEmail: document.getElementById('endComplainantEmail')?.value ?? '',
-        rdmpaoEmail: document.getElementById('endRdmpaoEmail')?.value ?? '',
-        fontFamily: document.getElementById('endFontFamily')?.value ?? 'font-sans',
-        briefDescription: document.getElementById('endBriefDescription')?.value ?? '',
-        sigType: sigChecked ? sigChecked.value : 'esign',
-        attachments: [...endorseAttachmentsList],
-        arrangeMode: endorseAttachmentArrangeMode,
-        layoutMode: endorseAttachmentLayoutMode
-    };
-}
-
-function restoreEndorseModalDraft(draft) {
-    if (!draft) return;
-    const sel = document.getElementById('endOfficeSelect');
-    if (sel) {
-        if (sel.options.length <= 1) {
-            sel.innerHTML = '<option value="">-- Select LTO Region / Office --</option>';
-            AppState.directory.forEach((d, idx) => {
-                sel.innerHTML += `<option value="${idx}">${escapeHtml(d.office)} (${escapeHtml(d.code)})</option>`;
-            });
-        }
-        sel.value = draft.officeSelect || '';
-        if (draft.officeSelect !== '' && AppState.directory[parseInt(draft.officeSelect, 10)]) {
-            populateEndorseChiefDropdown(parseInt(draft.officeSelect, 10), draft.chiefName || '');
-            const chiefSel = document.getElementById('endChiefNameSelect');
-            if (chiefSel && draft.chiefNameSelect !== '') {
-                chiefSel.value = draft.chiefNameSelect;
-            }
-        }
-    }
-    document.getElementById('endorseTicketIndex').value = draft.ticketIndex ?? '';
-    document.getElementById('endChiefName').value = draft.chiefName || '';
-    document.getElementById('endPosition').value = draft.position || '';
-    document.getElementById('endAgencyName').value = draft.agencyName || '';
-    document.getElementById('endEmailAddress').value = draft.emailAddress || '';
-    document.getElementById('endOfficeAddress').value = draft.officeAddress || '';
-    document.getElementById('endComplainantName').value = draft.complainantName || '';
-    document.getElementById('endComplainantEmail').value = draft.complainantEmail || '';
-    document.getElementById('endRdmpaoEmail').value = draft.rdmpaoEmail || '';
-    if (document.getElementById('endFontFamily')) {
-        document.getElementById('endFontFamily').value = draft.fontFamily || 'font-sans';
-    }
-    document.getElementById('endBriefDescription').value = draft.briefDescription || '';
-    const sigRadio = document.querySelector(`input[name="sigType"][value="${draft.sigType || 'esign'}"]`);
-    if (sigRadio) sigRadio.checked = true;
-
-    endorseAttachmentsList = Array.isArray(draft.attachments) ? [...draft.attachments] : [];
-    endorseAttachmentArrangeMode = draft.arrangeMode || "custom";
-    endorseAttachmentLayoutMode = draft.layoutMode || "page_per_item";
-    renderEndorseAttachmentList();
-}
-
-function openEndorseModal(index) {
-    ensureDirectoryOfficialsInitialized();
-    const ticket = AppState.tickets[index];
-    if (!ticket) return;
-    if (!canEndorseTicket(ticket)) {
-        showSystemAlert("View Only — Not Ticket Owner", "You can only endorse tickets owned by your account.", "🔒");
-        return;
-    }
-    document.getElementById('endorseTicketIndex').value = index;
-
-    const sel = document.getElementById('endOfficeSelect');
-    if (sel) {
-        sel.innerHTML = '<option value="">-- Select LTO Region / Office --</option>';
-        AppState.directory.forEach((d, idx) => {
-            sel.innerHTML += `<option value="${idx}">${escapeHtml(d.office)} (${escapeHtml(d.code)})</option>`;
-        });
-    }
-
-    if (lastEndorseModalDraft && String(lastEndorseModalDraft.ticketIndex) === String(index)) {
-        restoreEndorseModalDraft(lastEndorseModalDraft);
-        document.getElementById('endorseModal').style.display = 'flex';
-        return;
-    }
-
-    lastEndorseModalDraft = null;
-    endorseAttachmentsList = [];
-    endorseAttachmentArrangeMode = "custom";
-    endorseAttachmentLayoutMode = "page_per_item";
-
-    const extra = ticket.extraData || {};
-    document.getElementById('endChiefName').value = "";
-    document.getElementById('endPosition').value = "";
-    document.getElementById('endAgencyName').value = "";
-    document.getElementById('endEmailAddress').value = "";
-    document.getElementById('endOfficeAddress').value = "";
-    document.getElementById('endComplainantName').value = ticket.complainantName || "";
-    document.getElementById('endComplainantEmail').value = extra.complainantEmail || ticket.complainantEmail || "";
-    document.getElementById('endRdmpaoEmail').value = "";
-    document.getElementById('endBriefDescription').value = "";
-    const fileInput = document.getElementById('endAttachmentFiles');
-    if (fileInput) fileInput.value = "";
-    renderEndorseAttachmentList();
-
-    const chiefSel = document.getElementById('endChiefNameSelect');
-    if (chiefSel) chiefSel.innerHTML = '<option value="">-- Select Region First --</option>';
-
-    document.getElementById('endorseModal').style.display = 'flex';
-}
-
-function onRegionDirectorySelect(val) {
-    const chiefSel = document.getElementById('endChiefNameSelect');
-    if (val === "" || val === undefined) {
-        if (chiefSel) chiefSel.innerHTML = '<option value="">-- Select Region First --</option>';
-        document.getElementById('endChiefName').value = "";
-        document.getElementById('endPosition').value = "";
-        document.getElementById('endAgencyName').value = "";
-        document.getElementById('endEmailAddress').value = "";
-        document.getElementById('endOfficeAddress').value = "";
-        document.getElementById('endRdmpaoEmail').value = "";
-        return;
-    }
-    const regionIdx = parseInt(val, 10);
-    const entry = AppState.directory[regionIdx];
-    if (entry) {
-        document.getElementById('endChiefName').value = entry.chief || "";
-        document.getElementById('endPosition').value = entry.position || "";
-        document.getElementById('endAgencyName').value = entry.office || "Land Transportation Office";
-        document.getElementById('endEmailAddress').value = entry.email || "";
-        document.getElementById('endOfficeAddress').value = entry.address || "";
-        document.getElementById('endRdmpaoEmail').value = entry.rdmpaoEmail || entry.email || "";
-        populateEndorseChiefDropdown(regionIdx, entry.chief || "");
-    }
-}
-
-function closeEndorseModal(clearDraft = false) {
-    if (clearDraft) {
-        lastEndorseModalDraft = null;
-        endorseAttachmentsList = [];
-        endorsePreviewPages = [];
-    } else {
-        captureEndorseModalDraft();
-    }
-    document.getElementById('endorseModal').style.display = 'none';
-}
-
-function closeEndorsePreviewModal() {
-    setEndorsementEditState(false);
-    document.getElementById('endorsePreviewModal').style.display = 'none';
-    document.body.classList.remove('printing-endorse');
-    const endorseModal = document.getElementById('endorseModal');
-    if (endorseModal) {
-        if (lastEndorseModalDraft) {
-            restoreEndorseModalDraft(lastEndorseModalDraft);
-        }
-        endorseModal.style.display = 'flex';
-    }
-}
-
-function addWorkingDays(startDateStr, daysToAdd) {
-    let dateObj = new Date(mmddyyyyToISO(startDateStr));
-    if (isNaN(dateObj.getTime())) dateObj = new Date();
-    let added = 0;
-    while (added < daysToAdd) {
-        dateObj.setDate(dateObj.getDate() + 1);
-        let isoStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
-        if (dateObj.getDay() !== 0 && dateObj.getDay() !== 6 && !AppState.toggledOffDates.includes(isoStr)) added++;
-    }
-    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    return `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dateObj.getDay()]}, ${String(dateObj.getDate()).padStart(2, '0')} ${months[dateObj.getMonth()]} ${dateObj.getFullYear()}`;
-}
-
-function buildTicketBriefDescriptionHtml(ticket, modalDesc) {
-    const cleanText = String(modalDesc || "").trim();
-    if (!cleanText) return "";
-    const lower = cleanText.toLowerCase();
-    return (lower.startsWith("against ") || lower.startsWith("regarding "))
-        ? escapeHtml(cleanText)
-        : `against ${escapeHtml(cleanText)}`;
-}
-
-function buildTicketForwardedClauseHtml(ticket) {
-    const extra = ticket.extraData || {};
-    const fwdTo = String(extra.forwardedTo || ticket.forwardedTo || "").trim();
-    const fwdEmail = String(extra.forwardedEmail || ticket.forwardedEmail || "").trim();
-    if (!fwdTo && !fwdEmail) return "";
-    const emailPart = fwdEmail ? ` (<span class="text-blue-700 underline">${escapeHtml(fwdEmail)}</span>)` : "";
-    const labelPart = fwdTo ? `“<strong>${escapeHtml(fwdTo)}</strong>”` : "";
-    return ` and subsequently forwarded to ${labelPart}${emailPart}`;
-}
-
-function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = (evt) => resolve(evt.target.result);
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(file);
-    });
-}
-
-async function renderPdfFileToPreviewPages(attItem) {
-    const pagesOut = [];
-    if (window.pdfjsLib && attItem.file) {
-        try {
-            const arrayBuffer = await attItem.file.arrayBuffer();
-            const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-            const total = pdfDoc.numPages || 1;
-            attItem.pageCount = total;
-
-            for (let p = 1; p <= total; p++) {
-                const page = await pdfDoc.getPage(p);
-                const viewport = page.getViewport({ scale: 1.85 });
-                const canvas = document.createElement("canvas");
-                canvas.width = Math.round(viewport.width);
-                canvas.height = Math.round(viewport.height);
-                const ctx = canvas.getContext("2d");
-                ctx.fillStyle = "#ffffff";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-                const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-
-                pagesOut.push({
-                    pageId: `${attItem.id}_p${p}`,
-                    sourceFileName: attItem.name,
-                    sourceType: "pdf",
-                    pdfPageNum: p,
-                    pdfTotalPages: total,
-                    label: total > 1
-                        ? `Attachment: ${attItem.name} (Page ${p} of ${total})`
-                        : `Attachment: ${attItem.name}`,
-                    imageUrl: dataUrl,
-                    widthPct: 100,
-                    isFallbackPdf: false
-                });
-            }
-            return pagesOut;
-        } catch (err) {
-            console.warn("PDF.js page rendering fallback triggered:", err);
-        }
-    }
-
-    const blobUrl = URL.createObjectURL(attItem.file);
-    pagesOut.push({
-        pageId: `${attItem.id}_fallback`,
-        sourceFileName: attItem.name,
-        sourceType: "pdf",
-        pdfPageNum: 1,
-        pdfTotalPages: 1,
-        label: `Attachment: ${attItem.name}`,
-        imageUrl: blobUrl,
-        widthPct: 100,
-        isFallbackPdf: true
-    });
-    return pagesOut;
-}
-
-async function buildEndorsePreviewPagesFromAttachments(attachments) {
-    const pages = [];
-    for (const item of attachments) {
-        if (item.kind === "image") {
-            const dataUrl = item.previewUrl || await readFileAsDataUrl(item.file);
-            pages.push({
-                pageId: `${item.id}_img`,
-                sourceFileName: item.name,
-                sourceType: "image",
-                pdfPageNum: null,
-                pdfTotalPages: null,
-                label: `Attachment: ${item.name}`,
-                imageUrl: dataUrl,
-                widthPct: 100,
-                isFallbackPdf: false
-            });
-        } else if (item.kind === "pdf") {
-            const pdfPages = await renderPdfFileToPreviewPages(item);
-            pages.push(...pdfPages);
-        }
-    }
-    return pages;
-}
-
-function toggleEndorseAttachmentLabels() {
-    endorseShowAttachmentLabels = !endorseShowAttachmentLabels;
-    const btn = document.getElementById("btnToggleEndorseAttachmentLabels");
-    if (btn) {
-        btn.textContent = endorseShowAttachmentLabels ? "🏷️ File Labels: ON" : "🏷️ File Labels: OFF";
-    }
-    renderEndorseAttachmentsPreviewSection();
-}
-
-function moveEndorsePreviewPage(idx, delta) {
-    const newIdx = idx + delta;
-    if (idx < 0 || idx >= endorsePreviewPages.length || newIdx < 0 || newIdx >= endorsePreviewPages.length) return;
-    const [moved] = endorsePreviewPages.splice(idx, 1);
-    endorsePreviewPages.splice(newIdx, 0, moved);
-    renderEndorseAttachmentsPreviewSection();
-}
-
-function adjustEndorsePreviewPageWidth(idx, deltaPct) {
-    const page = endorsePreviewPages[idx];
-    if (!page) return;
-    page.widthPct = Math.max(40, Math.min(100, (page.widthPct || 100) + deltaPct));
-    renderEndorseAttachmentsPreviewSection();
-}
-
-function removeEndorsePreviewPage(idx) {
-    if (idx < 0 || idx >= endorsePreviewPages.length) return;
-    endorsePreviewPages.splice(idx, 1);
-    renderEndorseAttachmentsPreviewSection();
-}
-
-function buildSingleAttachmentBlockHtml(page, idx, total) {
-    const labelHtml = endorseShowAttachmentLabels
-        ? `<p class="text-[11px] font-bold text-slate-800 mb-2 truncate">${escapeHtml(page.label)} (${idx + 1} of ${total})</p>`
-        : "";
-    const widthStyle = `width: ${page.widthPct || 100}%; max-width: 100%; height: auto;`;
-
-    const controlsHtml = `
-        <div class="no-print flex flex-wrap items-center justify-between gap-2 mb-2 px-2.5 py-1.5 bg-slate-100 border border-slate-300 rounded text-[11px] text-slate-800">
-            <span class="font-bold">Page ${idx + 1}/${total} • ${escapeHtml(page.sourceFileName)}</span>
-            <div class="flex items-center gap-1">
-                <button type="button" onclick="moveEndorsePreviewPage(${idx}, -1)" ${idx === 0 ? "disabled" : ""} class="px-2 py-0.5 bg-white hover:bg-slate-200 disabled:opacity-40 border border-slate-400 rounded font-bold" title="Move Up">↑</button>
-                <button type="button" onclick="moveEndorsePreviewPage(${idx}, 1)" ${idx === total - 1 ? "disabled" : ""} class="px-2 py-0.5 bg-white hover:bg-slate-200 disabled:opacity-40 border border-slate-400 rounded font-bold" title="Move Down">↓</button>
-                <button type="button" onclick="adjustEndorsePreviewPageWidth(${idx}, -10)" class="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-400 rounded font-bold" title="Smaller">A-</button>
-                <button type="button" onclick="adjustEndorsePreviewPageWidth(${idx}, 10)" class="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-400 rounded font-bold" title="Larger">A+</button>
-                <button type="button" onclick="removeEndorsePreviewPage(${idx})" class="px-2 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold" title="Remove Page">✕</button>
-            </div>
-        </div>
-    `;
-
-    if (page.isFallbackPdf) {
-        return `
-            <div class="endorse-attachment-page border border-slate-300 rounded-lg p-3 bg-white">
-                ${controlsHtml}
-                ${labelHtml}
-                <iframe src="${page.imageUrl}" class="w-full h-[680px] border border-slate-200 rounded bg-white"></iframe>
-            </div>
-        `;
-    }
-
-    return `
-        <div class="endorse-attachment-page border border-slate-300 rounded-lg p-3 bg-white text-center">
-            ${controlsHtml}
-            ${labelHtml}
-            <img src="${page.imageUrl}" style="${widthStyle}" class="inline-block object-contain rounded bg-white" />
-        </div>
-    `;
-}
-
-function renderEndorseAttachmentsPreviewSection() {
-    const container = document.getElementById("endorseAttachmentsPreviewSection");
-    const toolbar = document.getElementById("endorseAttachmentPreviewToolbar");
-    if (!container) return;
-
-    const total = endorsePreviewPages.length;
-    if (toolbar) {
-        toolbar.classList.toggle("hidden", total === 0);
-    }
-
-    if (total === 0) {
-        container.innerHTML = "";
-        return;
-    }
-
-    const layoutMode = endorseAttachmentLayoutMode || "page_per_item";
-
-    if (layoutMode === "two_per_page") {
-        let pairsHtml = "";
-        for (let i = 0; i < total; i += 2) {
-            const p1 = endorsePreviewPages[i];
-            const p2 = endorsePreviewPages[i + 1];
-            pairsHtml += `
-                <div class="report-a4-page endorse-a4-attachment-sheet space-y-4">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-                        ${buildSingleAttachmentBlockHtml(p1, i, total)}
-                        ${p2 ? buildSingleAttachmentBlockHtml(p2, i + 1, total) : ""}
-                    </div>
-                </div>
-            `;
-        }
-        container.innerHTML = pairsHtml;
-        return;
-    }
-
-    if (layoutMode === "stacked_same_page") {
-        container.innerHTML = `
-            <div class="report-a4-page endorse-a4-attachment-sheet space-y-4">
-                ${endorsePreviewPages.map((p, idx) => buildSingleAttachmentBlockHtml(p, idx, total)).join("")}
-            </div>
-        `;
-        return;
-    }
-
-    container.innerHTML = endorsePreviewPages.map((p, idx) => `
-        <div class="report-a4-page endorse-a4-attachment-sheet space-y-3">
-            ${buildSingleAttachmentBlockHtml(p, idx, total)}
-        </div>
-    `).join("");
-}
-
-async function generateEndorsementLetter(e) {
-    e.preventDefault();
-    captureEndorseModalDraft();
-    const ticketIndex = parseInt(document.getElementById('endorseTicketIndex').value, 10);
-    const ticket = AppState.tickets[ticketIndex];
-    if (!ticket) return;
-
-    const chiefName = document.getElementById('endChiefName').value.trim();
-    const position = document.getElementById('endPosition').value.trim();
-    const agencyName = document.getElementById('endAgencyName').value.trim();
-    const emailAddress = document.getElementById('endEmailAddress').value.trim();
-    const officeAddress = document.getElementById('endOfficeAddress').value.trim();
-    const complainantName = document.getElementById('endComplainantName').value.trim();
-    const complainantEmail = document.getElementById('endComplainantEmail').value.trim();
-    const rdmpaoEmail = document.getElementById('endRdmpaoEmail').value.trim() || emailAddress || "lto.feedback@gmail.com";
-    const briefDesc = document.getElementById('endBriefDescription').value.trim();
-    const fontClass = document.getElementById('endFontFamily')?.value || 'font-sans';
-    const sigType = document.querySelector('input[name="sigType"]:checked')?.value || 'esign';
-
-    const chiefLastName = chiefName.split(" ").pop() || "Director";
-    const dueDateStr = addWorkingDays(ticket.dateReceived || getTodayMMDDYYYY(), 20);
-    const subjectTerm = resolveTicketSubjectTerm(ticket);
-    const briefDescHtml = buildTicketBriefDescriptionHtml(ticket, briefDesc);
-    const forwardedClauseHtml = buildTicketForwardedClauseHtml(ticket);
-    const formattedReceivedDate = formatDayMonthYear(ticket.dateReceived || getTodayMMDDYYYY());
-    const todayFormatted = formatDayMonthYear(new Date());
-
-    const sigBlock = sigType === 'esign'
-        ? `<div class="font-bold text-xs text-slate-800 pl-6 mb-1">[SIGNED]</div><p class="font-extrabold uppercase text-xs text-slate-900">MARY MAY M. JACOB</p><p class="text-slate-800 text-xs">Head, LTO Strategic Communications</p><p class="text-slate-700 text-xs">Central – Public Assistance Office</p>`
-        : `<p class="font-extrabold uppercase text-xs text-slate-900 mt-4">MARY MAY M. JACOB</p><p class="text-slate-800 text-xs">Head, LTO Strategic Communications</p><p class="text-slate-700 text-xs">Central – Public Assistance Office</p>`;
-
-    const printArea = document.getElementById('endorseLetterPrintArea');
-    printArea.className = `bg-white text-slate-900 p-8 sm:p-10 rounded-xl shadow-2xl max-w-[820px] w-full space-y-5 text-xs leading-relaxed ${fontClass}`;
-
-    const dataMap = {
-        todayDate: todayFormatted,
-        dateReceivedFormatted: formattedReceivedDate,
-        chiefName: escapeHtml(chiefName),
-        chiefLastName: escapeHtml(chiefLastName),
-        chiefPosition: escapeHtml(position),
-        agencyName: escapeHtml(agencyName),
-        officeName: escapeHtml(agencyName),
-        officeAddress: escapeHtml(officeAddress),
-        emailAddress: escapeHtml(emailAddress),
-        rdmpaoEmail: escapeHtml(rdmpaoEmail),
-        complainantName: escapeHtml(complainantName),
-        complainantEmail: escapeHtml(complainantEmail),
-        platform: escapeHtml(ticket.platform || 'Portal'),
-        ticketSubjectTerm: escapeHtml(subjectTerm),
-        forwardedClause: forwardedClauseHtml,
-        briefDescription: briefDescHtml,
-        dueDate: escapeHtml(dueDateStr),
-        ticketRefNo: escapeHtml(ticket.referralNo || ''),
-        includeShowCause: isTrafficViolationConcern(ticket),
-        signatureBlock: sigBlock,
-        attachmentHtml: `<div id="endorseAttachmentPreviewToolbar" class="no-print hidden flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200"><span class="text-[11px] font-bold text-slate-700">Attached Pages Preview (Reorder, Resize, or Remove pages before printing)</span><button type="button" id="btnToggleEndorseAttachmentLabels" onclick="toggleEndorseAttachmentLabels()" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px] font-bold">🏷️ File Labels: ON</button></div><div id="endorseAttachmentsPreviewSection" class="space-y-4 pt-2"></div>`
-    };
-
-    printArea.innerHTML = renderStandardEndorsementLetterHtml(dataMap);
-
-    if (endorseAttachmentsList.length > 0) {
-        endorsePreviewPages = await buildEndorsePreviewPagesFromAttachments(endorseAttachmentsList);
-        renderEndorseAttachmentsPreviewSection();
-    } else {
-        endorsePreviewPages = [];
-        renderEndorseAttachmentsPreviewSection();
-    }
-
-    setEndorsementEditState(false);
-    document.getElementById('endorseModal').style.display = 'none';
-    document.getElementById('endorsePreviewModal').style.display = 'flex';
-}
-
-function printEndorsementLetter() {
-    if (isEndorseLetterEditing) setEndorsementEditState(false);
-    document.body.classList.add('printing-endorse');
-    setTimeout(() => {
-        window.print();
         setTimeout(() => {
-            document.body.classList.remove('printing-endorse');
+            document.body.classList.remove('printing-accomplishment');
+            if (target && target.dataset.prevHtml !== undefined) {
+                target.innerHTML = target.dataset.prevHtml;
+                target.className = target.dataset.prevClass || '';
+                delete target.dataset.prevHtml;
+                delete target.dataset.prevClass;
+            }
         }, 400);
     }, 150);
 }
 
-function openSnippetModal() { document.getElementById('snippetModal').style.display = 'flex'; document.getElementById('newSnippetTitle').value = ''; document.getElementById('newSnippetText').value = ''; }
-function closeSnippetModal() { document.getElementById('snippetModal').style.display = 'none'; }
-
-function saveSnippet() {
-    const title = document.getElementById('newSnippetTitle').value.trim();
-    const text = document.getElementById('newSnippetText').value.trim();
-    if (!title || !text) return;
-    AppState.templates.push({ title, text });
-    renderSnippets(); closeSnippetModal(); showToast("Snippet added!");
-}
-
-function renderSnippets() {
-    const container = document.getElementById('snippetCardsContainer');
-    if(!container) return;
-    container.innerHTML = '';
-    AppState.templates.forEach((tpl, idx) => {
-        const card = document.createElement('div');
-        card.className = 'bg-slate-900 border border-slate-800 hover:border-sky-500/40 rounded-xl p-4 flex flex-col justify-between transition group';
-        card.innerHTML = `
-            <div>
-                <div class="flex items-center justify-between gap-2 mb-2"><h4 class="font-bold text-xs text-sky-400 uppercase tracking-wide">${escapeHtml(tpl.title)}</h4><button type="button" onclick="deleteSnippet(${idx})" class="text-slate-600 hover:text-rose-400 text-xs transition">✕</button></div>
-                <p class="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">${escapeHtml(tpl.text)}</p>
-            </div>
-            <button type="button" onclick="copyTextToClipboard(\`${escapeJs(tpl.text)}\`)" class="mt-4 w-full py-2 bg-slate-800 hover:bg-blue-600 text-slate-200 hover:text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">📋 Copy Response</button>
-        `;
-        container.appendChild(card);
-    });
-}
-
-function deleteSnippet(idx) { AppState.templates.splice(idx, 1); renderSnippets(); showToast("Snippet removed"); }
-function copyTextToClipboard(text) { navigator.clipboard.writeText(text).then(() => showToast("Copied to clipboard!")); }
-
-function render24HourReminderBanner() {
-    const banner = document.getElementById('reminder24hBanner');
-    const textEl = document.getElementById('reminder24hBannerText');
-    if (!banner || !textEl) return;
-
-    if (AppState.settings?.notifications && AppState.settings.notifications.overdue24hBanner === false) {
-        banner.classList.add('hidden');
-        return;
-    }
-
-    const nowMs = Date.now();
-    let changed = false;
-    const overdueList = [];
-
-    (AppState.tickets || []).forEach(t => {
-        const isClosed = String(t.status || '').trim().toLowerCase() === 'closed';
-        const extra = t.extraData || {};
-        if (!isClosed && (t.is24Hours || extra.is24Hours)) {
-            if (!extra.timer24hStartedAt) {
-                const startMs = nowMs;
-                extra.timer24hStartedAt = startMs;
-                extra.timer24hDueAt = startMs + TIMER_24H_DURATION_MS;
-                t.extraData = extra;
-                changed = true;
-            }
-            const dueMs = Number(extra.timer24hDueAt || (Number(extra.timer24hStartedAt) + TIMER_24H_DURATION_MS));
-            if (nowMs >= dueMs) {
-                overdueList.push(t);
-            }
-        }
-    });
-
-    if (changed) {
-        saveStorage();
-    }
-
-    if (overdueList.length === 0) {
-        banner.classList.add('hidden');
-        return;
-    }
-
-    const firstTicket = overdueList[0];
-    const refLabel = firstTicket.referralNo ? `Ticket #${firstTicket.referralNo}` : `Row #${firstTicket.rowIndex || ''}`;
-    const extraCount = overdueList.length > 1 ? ` (+${overdueList.length - 1} more overdue)` : '';
-    textEl.textContent = `Reminder: 24-hour timer elapsed for ${refLabel} (${firstTicket.complainantName || 'Unassigned'})${extraCount}. Please review and update status.`;
-    banner.classList.remove('hidden');
-}
-
-function updateKPIs() {
-    const total = AppState.tickets.length;
-    const closed = AppState.tickets.filter(t => String(t.status || '').toLowerCase() === 'closed').length;
-    const pending = total - closed;
-    const rate = total > 0 ? ((closed / total) * 100).toFixed(1) : "0.0";
-
-    const kpiTotal = document.getElementById('kpiTotal');
-    const kpiClosed = document.getElementById('kpiClosed');
-    const kpiPending = document.getElementById('kpiPending');
-    const kpiRate = document.getElementById('kpiRate');
-    if(kpiTotal) kpiTotal.textContent = total;
-    if(kpiClosed) kpiClosed.textContent = closed;
-    if(kpiPending) kpiPending.textContent = pending;
-    if(kpiRate) kpiRate.textContent = `${rate}%`;
-
-    render24HourReminderBanner();
-}
-
-function getFilteredTickets() {
-    const searchVal = (document.getElementById('searchInput')?.value || '').toLowerCase().trim();
-    const platVal = document.getElementById('filterPlatform')?.value || '';
-    const statVal = document.getElementById('filterStatus')?.value || '';
-    const dateISO = document.getElementById('filterDate')?.value || '';
-    const viewScope = document.getElementById('superadminViewScope')?.value || 'all';
-
-    return AppState.tickets.filter(t => {
-        if (viewScope === 'my' && !isTicketOwnedByCurrentUser(t)) {
-            return false;
-        }
-        if (platVal && t.platform !== platVal) return false;
-        if (statVal && String(t.status || '').toLowerCase() !== statVal.toLowerCase()) return false;
-        if (dateISO && mmddyyyyToISO(t.dateReceived) !== dateISO) return false;
-
-        if (searchVal) {
-            const hay = `${t.adminNo} ${t.platform} ${t.referralNo} ${t.complainantName} ${t.category} ${t.ticketDetails} ${t.responseDetails} ${t.remarks}`.toLowerCase();
-            if (!hay.includes(searchVal)) return false;
-        }
-        return true;
-    });
-}
-
-function getRowCustomBackground(ticket) {
-    if (!ticket) return '';
-    const tAdmin = String(ticket.adminNo || '').trim().toLowerCase();
-    if (!tAdmin) return '';
-
-    if (currentUser && currentUser.logColor && currentUser.logColor !== 'Default') {
-        const myAdmin = String(currentUser.adminNo || deriveOperatorAdminNo(currentUser) || '').trim().toLowerCase();
-        const myUser = String(currentUser.username || '').trim().toLowerCase();
-        if (tAdmin === myAdmin || tAdmin === myUser) {
-            return currentUser.logColor;
-        }
-    }
-
-    if (Array.isArray(AppState.users)) {
-        const matchedUser = AppState.users.find(u => {
-            if (!u || !u.logColor || u.logColor === 'Default') return false;
-            const uAdmin = String(u.adminNo || deriveOperatorAdminNo(u) || '').trim().toLowerCase();
-            const uName = String(u.username || '').trim().toLowerCase();
-            return (uAdmin && tAdmin === uAdmin) || (uName && tAdmin === uName);
-        });
-        if (matchedUser) {
-            return matchedUser.logColor;
-        }
-    }
-
-    return '';
-}
-
-function renderTable() {
-    const tbody = document.getElementById('ticketTableBody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-
-    const isDense = !!AppState.settings?.preferences?.denseTableMode;
-    tbody.classList.toggle('dense-rows', isDense);
-
-    const filtered = getFilteredTickets();
-    if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="14" class="text-center py-8 text-slate-500 text-xs">No ticket records match the active filter criteria.</td></tr>`;
-        return;
-    }
-
-    filtered.forEach((t, idx) => {
-        const globalIdx = AppState.tickets.indexOf(t);
-        const isClosed = String(t.status || '').toLowerCase() === 'closed';
-        const isOwner = isTicketOwnedByCurrentUser(t);
-
-        const tr = document.createElement('tr');
-        const isPendingRow = !isClosed;
-        const customBg = getRowCustomBackground(t);
-        if (isPendingRow) {
-            tr.className = 'bg-rose-950/70 hover:bg-rose-900/80 border-l-4 border-l-rose-500 text-rose-100 transition';
-        } else if (customBg) {
-            tr.style.backgroundColor = customBg;
-            tr.className = 'text-white transition';
-        } else {
-            tr.className = 'hover:bg-slate-800/40 transition';
-        }
-
-        const statusBadgeClass = isClosed
-            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-            : 'bg-rose-500/20 text-rose-300 border-rose-500/40';
-
-        const actionButtonsHtml = isOwner
-            ? `
-                <div class="inline-flex items-center gap-1">
-                    <button type="button" onclick="openEditModal(${globalIdx})" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold" title="Edit Ticket">✏️</button>
-                    <button type="button" onclick="openEndorseModal(${globalIdx})" class="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-[10px] font-bold" title="Endorse Ticket">📄</button>
-                    <button type="button" onclick="deleteTicket(${globalIdx})" class="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded text-[10px] font-bold" title="Delete Ticket">🗑️</button>
-                </div>
-            `
-            : `<span class="px-2 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700 text-[10px] font-semibold" title="Owned by ${escapeHtml(t.adminNo || 'another operator')} — View Only">🔒 View Only</span>`;
-
-        tr.innerHTML = `
-            <td class="text-center font-mono text-slate-400">${idx + 1}</td>
-            <td class="text-center whitespace-nowrap">${actionButtonsHtml}</td>
-            <td class="font-mono font-bold text-amber-300 whitespace-nowrap">${escapeHtml(t.adminNo || '')}</td>
-            <td class="font-bold text-sky-300 whitespace-nowrap">${escapeHtml(t.platform || '')}</td>
-            <td class="font-mono font-semibold text-white whitespace-nowrap">${escapeHtml(t.referralNo || '')}</td>
-            <td class="font-mono text-slate-200 whitespace-nowrap">${escapeHtml(t.dateReceived || '')}</td>
-            <td class="text-slate-200">${escapeHtml(t.category || '')}</td>
-            <td class="text-slate-300 text-[11px]">${escapeHtml(t.ticketType || '')}</td>
-            <td class="font-semibold text-white">${escapeHtml(t.complainantName || '')}</td>
-            <td class="max-w-xs text-slate-200 text-[11px]">${escapeHtml(t.ticketDetails || '')}</td>
-            <td class="max-w-xs text-slate-200 text-[11px]">${escapeHtml(t.responseDetails || '')}</td>
-            <td class="text-slate-200 text-[11px]">${escapeHtml(t.actionTaken || '')}</td>
-            <td class="text-center whitespace-nowrap"><span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${statusBadgeClass}">${escapeHtml(t.status || 'Closed')}</span></td>
-            <td class="text-slate-300 text-[11px]">${escapeHtml(t.remarks || '')}</td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
-function escapeHtml(str) {
-    if(!str) return '';
-    return String(str).replace(/[&<>'"]/g, tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag]));
-}
-
-function escapeJs(str) {
-    if(!str) return '';
-    return String(str).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-}
-
-function openBackendSheet() { if (!isSuperAdmin()) return; window.open("https://docs.google.com/spreadsheets/d/1Z_w6k6y8P2tN9O8L_mK3jH2G1F0D9S8A7P6O5N4M3L2K/edit", "_blank"); }
-
-const TIMER_24H_DURATION_MS = 24 * 60 * 60 * 1000;
-const TIMER_24H_CHECK_INTERVAL_MS = 10000;
-const TICKET_SAVE_RETRY_COUNT = 2;
-const TICKET_SAVE_RETRY_DELAY_MS = 450;
-
-function format24HourCountdownText(dueAtMs) {
-    const remainingMs = Math.max(0, Number(dueAtMs || 0) - Date.now());
-    const totalSeconds = Math.floor(remainingMs / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    return `${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
-}
-
-function update24HourStatusDisplay(explicitDueAtMs = null, isActiveFlag = null) {
-    const checkbox = document.getElementById('formIs24Hours');
-    const indicator = document.getElementById('status24HourIndicator');
-    const countdownEl = document.getElementById('status24HourCountdown');
-    if (!checkbox || !indicator || !countdownEl) return;
-
-    const active = isActiveFlag !== null ? !!isActiveFlag : !!checkbox.checked;
-    checkbox.checked = active;
-
-    if (!active) {
-        indicator.textContent = '24-Hour Timer: Inactive';
-        indicator.className = 'text-[10px] font-bold text-slate-400';
-        countdownEl.textContent = '24h 00m 00s remaining';
-        countdownEl.className = 'font-mono text-[10px] text-slate-500';
-        return;
-    }
-
-    const dueAt = explicitDueAtMs || (Date.now() + TIMER_24H_DURATION_MS);
-    const remainingMs = dueAt - Date.now();
-    if (remainingMs <= 0) {
-        indicator.textContent = '24-Hour Timer: ELAPSED (Overdue)';
-        indicator.className = 'text-[10px] font-extrabold text-rose-400';
-        countdownEl.textContent = '00h 00m 00s remaining';
-        countdownEl.className = 'font-mono text-[10px] font-bold text-rose-400';
-    } else {
-        indicator.textContent = '24-Hour Timer: Active';
-        indicator.className = 'text-[10px] font-extrabold text-amber-400';
-        countdownEl.textContent = `${format24HourCountdownText(dueAt)} remaining`;
-        countdownEl.className = 'font-mono text-[10px] font-bold text-sky-300';
-    }
-}
-
-function on24HourCheckboxChange() {
-    const checkbox = document.getElementById('formIs24Hours');
-    const statusSel = document.getElementById('formStatus');
-    if (!checkbox) return;
-
-    if (checkbox.checked) {
-        if (statusSel && statusSel.value.toLowerCase() === 'closed') {
-            const pendingOpt = Array.from(statusSel.options).find(o => o.value.toLowerCase() === 'pending');
-            if (pendingOpt) statusSel.value = pendingOpt.value;
-        }
-        const nowMs = Date.now();
-        checkbox.dataset.timerStart = String(nowMs);
-        checkbox.dataset.timerDue = String(nowMs + TIMER_24H_DURATION_MS);
-        update24HourStatusDisplay(nowMs + TIMER_24H_DURATION_MS, true);
-    } else {
-        delete checkbox.dataset.timerStart;
-        delete checkbox.dataset.timerDue;
-        update24HourStatusDisplay(null, false);
-    }
-}
-
-setInterval(() => {
-    const modal = document.getElementById('ticketModal');
-    const checkbox = document.getElementById('formIs24Hours');
-    if (modal && modal.style.display === 'flex' && checkbox && checkbox.checked) {
-        const dueAt = Number(checkbox.dataset.timerDue || 0);
-        if (dueAt > 0) update24HourStatusDisplay(dueAt, true);
-    }
-}, 1000);
-
-function captureTicketModalDraft() {
-    const checkbox = document.getElementById('formIs24Hours');
-    lastTicketModalDraft = {
-        editIndex: document.getElementById('editTicketIndex')?.value ?? '',
-        adminNo: document.getElementById('formAdminNo')?.value ?? '',
-        platform: document.getElementById('formPlatform')?.value ?? '',
-        referralNo: document.getElementById('formReferralNo')?.value ?? '',
-        dateReceived: document.getElementById('formDateReceived')?.value ?? '',
-        categorySearch: document.getElementById('formCategorySearch')?.value ?? '',
-        ticketType: document.getElementById('formTicketType')?.value ?? '',
-        complainantName: document.getElementById('formComplainantName')?.value ?? '',
-        ticketDetails: document.getElementById('formTicketDetails')?.value ?? '',
-        responseDetails: document.getElementById('formResponseDetails')?.value ?? '',
-        actionTaken: document.getElementById('formActionTaken')?.value ?? '',
-        status: document.getElementById('formStatus')?.value ?? '',
-        remarks: document.getElementById('formRemarks')?.value ?? '',
-        is24Hours: !!(checkbox && checkbox.checked),
-        timerStart: checkbox?.dataset?.timerStart || '',
-        timerDue: checkbox?.dataset?.timerDue || ''
-    };
-}
-
-function restoreTicketModalDraft(draft) {
-    if (!draft) return;
-    populateDropdowns();
-    document.getElementById('editTicketIndex').value = draft.editIndex ?? '';
-    document.getElementById('formAdminNo').value = draft.adminNo || '';
-    if (draft.platform) document.getElementById('formPlatform').value = draft.platform;
-    document.getElementById('formReferralNo').value = draft.referralNo || '';
-    setSystemDateInputValue('formDateReceived', draft.dateReceived || getTodayISO());
-    document.getElementById('formCategorySearch').value = draft.categorySearch || '';
-    if (draft.ticketType) document.getElementById('formTicketType').value = draft.ticketType;
-    document.getElementById('formComplainantName').value = draft.complainantName || '';
-    document.getElementById('formTicketDetails').value = draft.ticketDetails || '';
-    document.getElementById('formResponseDetails').value = draft.responseDetails || '';
-    if (draft.actionTaken) document.getElementById('formActionTaken').value = draft.actionTaken;
-    if (draft.status) document.getElementById('formStatus').value = draft.status;
-    document.getElementById('formRemarks').value = draft.remarks || '';
-
-    const checkbox = document.getElementById('formIs24Hours');
-    if (checkbox) {
-        checkbox.checked = !!draft.is24Hours;
-        if (draft.timerStart) checkbox.dataset.timerStart = draft.timerStart;
-        else delete checkbox.dataset.timerStart;
-        if (draft.timerDue) checkbox.dataset.timerDue = draft.timerDue;
-        else delete checkbox.dataset.timerDue;
-        update24HourStatusDisplay(draft.timerDue ? Number(draft.timerDue) : null, !!draft.is24Hours);
-    }
-}
-
-function openAddModal() {
-    populateDropdowns();
-    document.getElementById('editTicketIndex').value = '';
-    editingTicketOriginalState = null;
-    document.getElementById('modalTitle').textContent = "Log New Ticket Entry";
-    document.getElementById('ticketForm').reset();
-    const operatorAdminCode = currentUser.adminNo || deriveOperatorAdminNo(currentUser);
-    document.getElementById('formAdminNo').value = operatorAdminCode;
-    document.getElementById('formAdminNo').readOnly = true;
-
-    const platSel = document.getElementById('formPlatform');
-    if (currentUser.defaultPortal && platSel && Array.from(platSel.options).some(o => o.value === currentUser.defaultPortal)) {
-        platSel.value = currentUser.defaultPortal;
-    }
-
-    setSystemDateInputValue('formDateReceived', getTodayISO());
-    document.getElementById('formCategorySearch').value = '';
-    document.getElementById('categoryDropdownList').classList.add('hidden');
-
-    const statusSel = document.getElementById('formStatus');
-    if (statusSel) {
-        const closedOpt = Array.from(statusSel.options).find(o => o.value.toLowerCase() === 'closed');
-        if (closedOpt) statusSel.value = closedOpt.value;
-    }
-
-    const checkbox = document.getElementById('formIs24Hours');
-    if (checkbox) {
-        checkbox.checked = false;
-        delete checkbox.dataset.timerStart;
-        delete checkbox.dataset.timerDue;
-    }
-    update24HourStatusDisplay(null, false);
-
-    autoGenTicketNo(false);
-    document.getElementById('ticketModal').style.display = 'flex';
-}
-
-function openEditModal(index) {
-    const t = AppState.tickets[index];
-    if (!t) return;
-    if (!canMutateTicket(t)) {
-        showSystemAlert("View Only — Not Ticket Owner", "You can only edit tickets owned by your account.", "🔒");
-        return;
-    }
-    populateDropdowns();
-    document.getElementById('editTicketIndex').value = index;
-    editingTicketOriginalState = JSON.parse(JSON.stringify(t));
-    document.getElementById('modalTitle').textContent = `Edit Ticket #${t.referralNo}`;
-    document.getElementById('formAdminNo').value = t.adminNo || currentUser.adminNo || deriveOperatorAdminNo(currentUser);
-    document.getElementById('formAdminNo').readOnly = true;
-    document.getElementById('formPlatform').value = t.platform;
-    document.getElementById('formReferralNo').value = t.referralNo;
-    setSystemDateInputValue('formDateReceived', mmddyyyyToISO(t.dateReceived));
-    document.getElementById('formCategorySearch').value = t.category || '';
-    document.getElementById('categoryDropdownList').classList.add('hidden');
-    document.getElementById('formTicketType').value = t.ticketType;
-    document.getElementById('formComplainantName').value = t.complainantName;
-    document.getElementById('formTicketDetails').value = t.ticketDetails;
-    document.getElementById('formResponseDetails').value = t.responseDetails;
-    document.getElementById('formActionTaken').value = t.actionTaken;
-    document.getElementById('formStatus').value = t.status;
-    document.getElementById('formRemarks').value = t.remarks;
-
-    const extra = t.extraData || {};
-    const isClosed = String(t.status || '').toLowerCase() === 'closed';
-    const active24h = !isClosed && !!(t.is24Hours || extra.is24Hours);
-    const checkbox = document.getElementById('formIs24Hours');
-    if (checkbox) {
-        checkbox.checked = active24h;
-        if (active24h) {
-            const startMs = Number(extra.timer24hStartedAt || Date.now());
-            const dueMs = Number(extra.timer24hDueAt || (startMs + TIMER_24H_DURATION_MS));
-            checkbox.dataset.timerStart = String(startMs);
-            checkbox.dataset.timerDue = String(dueMs);
-            update24HourStatusDisplay(dueMs, true);
-        } else {
-            delete checkbox.dataset.timerStart;
-            delete checkbox.dataset.timerDue;
-            update24HourStatusDisplay(null, false);
-        }
-    }
-
-    document.getElementById('ticketModal').style.display = 'flex';
-}
-
-function closeTicketModal(clearDraft = false) {
-    if (clearDraft) lastTicketModalDraft = null;
-    else captureTicketModalDraft();
-    const catList = document.getElementById('categoryDropdownList');
-    if (catList) catList.classList.add('hidden');
-    document.getElementById('ticketModal').style.display = 'none';
-}
-
-function autoGenTicketNo(forceOverwrite = false) {
-    const platName = String(document.getElementById('formPlatform')?.value || '').trim();
-    const platObj = AppState.settings.platforms.find(p => String(typeof p === 'string' ? p : p.name).trim().toUpperCase() === platName.toUpperCase());
-    const prefix = (platObj && typeof platObj === 'object' && platObj.prefix) ? String(platObj.prefix).trim().toUpperCase() : 'CPAO';
-    const isAuto = platObj && typeof platObj === 'object' ? (platObj.autoGen === true || platObj.autoGen === 'true') : true;
-
-    const refInput = document.getElementById('formReferralNo');
-    const editIdx = document.getElementById('editTicketIndex')?.value || '';
-    if (!refInput) return;
-
-    if ((editIdx === '' && isAuto) || forceOverwrite) {
-        if (forceOverwrite || !refInput.value.trim()) {
-            const rawDate = document.getElementById('formDateReceived')?.value || getTodayISO();
-            const parts = rawDate.split('-');
-            const dateCompact = parts.length === 3 ? `${parts[1]}${parts[2]}${parts[0]}` : '11122026';
-            const adminMatch = String(currentUser.username || '').match(/\d+/) || String(currentUser.name || '').match(/\d+/);
-            const adminNum = adminMatch ? adminMatch[0] : '36';
-            const basePattern = `${prefix}-${dateCompact}-${adminNum}-`;
-            let maxSeq = 0;
-            (AppState.tickets || []).forEach(t => {
-                const existingRef = String(t.referralNo || '').trim();
-                if (existingRef.toUpperCase().startsWith(basePattern.toUpperCase())) {
-                    const seqNum = parseInt(existingRef.slice(basePattern.length), 10);
-                    if (!isNaN(seqNum) && seqNum > maxSeq) maxSeq = seqNum;
-                }
-            });
-            refInput.value = `${basePattern}${String(maxSeq + 1).padStart(2, '0')}`;
-            if (forceOverwrite) {
-                showToast(`Generated Ticket No.: ${refInput.value}`, "info");
-            }
-        }
-    }
-}
-
-async function handleTicketFormSubmit(e) {
-    e.preventDefault();
-    if (isSavingTicket) return;
-
-    const editIdxStr = document.getElementById('editTicketIndex').value;
-    const isEditing = editIdxStr !== '';
-    const targetIdx = isEditing ? parseInt(editIdxStr, 10) : -1;
-
-    if (isEditing && AppState.tickets[targetIdx] && !canMutateTicket(AppState.tickets[targetIdx])) {
-        showSystemAlert("View Only — Not Ticket Owner", "You can only edit tickets owned by your account.", "🔒");
-        return;
-    }
-
-    const adminNo = (document.getElementById('formAdminNo').value || currentUser.adminNo || deriveOperatorAdminNo(currentUser)).trim();
-    const platform = document.getElementById('formPlatform').value;
-    const referralNo = document.getElementById('formReferralNo').value.trim();
-    const dateReceived = isoToMMDDYYYY(document.getElementById('formDateReceived').value);
-    const category = document.getElementById('formCategorySearch').value.trim();
-    const ticketType = document.getElementById('formTicketType').value;
-    const complainantName = document.getElementById('formComplainantName').value.trim();
-    const ticketDetails = document.getElementById('formTicketDetails').value.trim();
-    const responseDetails = document.getElementById('formResponseDetails').value.trim();
-    const actionTaken = document.getElementById('formActionTaken').value;
-    const status = document.getElementById('formStatus').value;
-    const remarks = document.getElementById('formRemarks').value.trim();
-
-    const isClosed = String(status || '').toLowerCase() === 'closed';
-    const checkbox = document.getElementById('formIs24Hours');
-    const is24Hours = !isClosed && !!(checkbox && checkbox.checked);
-    const nowMs = Date.now();
-    const prevExtra = (isEditing && AppState.tickets[targetIdx]?.extraData) ? AppState.tickets[targetIdx].extraData : {};
-    const timerStartMs = is24Hours
-        ? Number(checkbox?.dataset?.timerStart || prevExtra.timer24hStartedAt || nowMs)
-        : null;
-    const timerDueMs = is24Hours
-        ? Number(checkbox?.dataset?.timerDue || prevExtra.timer24hDueAt || (timerStartMs + TIMER_24H_DURATION_MS))
-        : null;
-
-    const extraData = {
-        ...prevExtra,
-        is24Hours,
-        timer24hStartedAt: timerStartMs,
-        timer24hDueAt: timerDueMs,
-        timer24hRemindedAt: is24Hours ? (prevExtra.timer24hRemindedAt || null) : null
-    };
-
-    const existingRowIndex = isEditing && AppState.tickets[targetIdx] ? AppState.tickets[targetIdx].rowIndex : null;
-    const ticketObj = {
-        rowIndex: existingRowIndex,
-        adminNo, platform, referralNo, dateReceived, category,
-        ticketType, complainantName, ticketDetails, responseDetails,
-        actionTaken, status, remarks, is24Hours, extraData
-    };
-
-    if (!isEditing) {
-        const dup = AppState.tickets.find(t => t.referralNo && t.referralNo.toLowerCase() === referralNo.toLowerCase());
-        if (dup) {
-            pendingTicketSubmission = { ticketObj, isEditing: false, targetIdx: -1 };
-            document.getElementById('dupTicketNoDisplay').textContent = referralNo;
-            document.getElementById('dupExistingInfo').textContent = `Complainant: ${dup.complainantName} | Date: ${dup.dateReceived} | Status: ${dup.status}`;
-            document.getElementById('duplicateWarningModal').style.display = 'flex';
-            return;
-        }
-    }
-
-    await persistTicketEntry(ticketObj, isEditing, targetIdx);
-}
-
-function proceedWithDuplicateTicket() {
-    document.getElementById('duplicateWarningModal').style.display = 'none';
-    if (pendingTicketSubmission) {
-        const { ticketObj, isEditing, targetIdx } = pendingTicketSubmission;
-        pendingTicketSubmission = null;
-        persistTicketEntry(ticketObj, isEditing, targetIdx);
-    }
-}
-
-function cancelDuplicateTicket() {
-    document.getElementById('duplicateWarningModal').style.display = 'none';
-    pendingTicketSubmission = null;
-    const ticketModal = document.getElementById('ticketModal');
-    if (ticketModal && ticketModal.style.display !== 'flex') {
-        ticketModal.style.display = 'flex';
-        if (lastTicketModalDraft) restoreTicketModalDraft(lastTicketModalDraft);
-    }
-}
-
-async function fetchWithRetry(url, options, retries = TICKET_SAVE_RETRY_COUNT) {
-    let lastErr = null;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            const resp = await fetch(url, options);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            return resp;
-        } catch (err) {
-            lastErr = err;
-            if (attempt < retries) {
-                await new Promise(r => setTimeout(r, TICKET_SAVE_RETRY_DELAY_MS * (attempt + 1)));
-            }
-        }
-    }
-    throw lastErr;
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;' }[m]));
 }
 
 function isUnknownActionErrorMessage(msg) {
-    const s = String(msg || '').toLowerCase();
-    return s.includes('unknown action') || s.includes('invalid action') || s.includes('unsupported action') || (s.includes('action') && s.includes('not found'));
+    const m = String(msg || "").toLowerCase();
+    return m.includes("unknown action") || m.includes("invalid action") || m.includes("unsupported action") || (m.includes("action") && m.includes("not found"));
 }
 
-async function sendTicketPayloadToAppsScript(actionName, targetRowIdx, ticketObj) {
-    const payload = {
-        action: actionName,
-        rowIndex: targetRowIdx,
-        ticket: ticketObj,
-        adminNo: ticketObj.adminNo,
-        platform: ticketObj.platform,
-        referralNo: ticketObj.referralNo,
-        dateReceived: ticketObj.dateReceived,
-        category: ticketObj.category,
-        ticketType: ticketObj.ticketType,
-        complainantName: ticketObj.complainantName,
-        ticketDetails: ticketObj.ticketDetails,
-        responseDetails: ticketObj.responseDetails,
-        actionTaken: ticketObj.actionTaken,
-        status: ticketObj.status,
-        remarks: ticketObj.remarks,
-        is24Hours: !!ticketObj.is24Hours,
-        extraData: JSON.stringify(ticketObj.extraData || {})
+async function fetchWithRetry(url, options, maxRetries = 2) {
+    let lastError;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const resp = await fetch(url, { ...options, mode: 'cors', cache: 'no-store' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp;
+        } catch (err) {
+            lastError = err;
+            if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 600 * Math.pow(2, attempt)));
+            }
+        }
+    }
+    throw lastError;
+}
+
+function buildTicketPayload(actionName, targetRowIdx, t) {
+    const cleanRow = Number(targetRowIdx) || Number(t.rowIndex) || 0;
+    const isClosed = String(t.status || '').trim().toLowerCase() === 'closed';
+    const active24h = !isClosed && !!(t.is24Hours || (t.extraData && t.extraData.is24Hours));
+    const extraObj = {
+        ...(t.extraData || {}),
+        is24Hours: active24h
     };
+    const extraStr = JSON.stringify(extraObj);
+    const formattedDate = "'" + formatCleanDate(t.dateReceived);
+    const refNoClean = String(t.referralNo || '').trim();
+    const adminNoClean = String(t.adminNo || '').trim();
+    const platformClean = String(t.platform || '').trim();
+    const categoryClean = String(t.category || '').trim();
+    const ticketTypeClean = String(t.ticketType || '').trim();
+    const complainantClean = String(t.complainantName || '').trim();
+    const ticketDetailsClean = String(t.ticketDetails || '').trim();
+    const responseDetailsClean = String(t.responseDetails || '').trim();
+    const actionTakenClean = String(t.actionTaken || '').trim();
+    const statusClean = String(t.status || '').trim();
+    const remarksClean = String(t.remarks || '').trim();
+
+    return {
+        action: actionName,
+        sheet: "Logs",
+        rowIndex: cleanRow,
+        row: cleanRow,
+        id: cleanRow,
+        adminNo: adminNoClean,
+        platform: platformClean,
+        referralNo: refNoClean,
+        ticketNo: refNoClean,
+        dateReceived: formattedDate,
+        category: categoryClean,
+        ticketType: ticketTypeClean,
+        complainantName: complainantClean,
+        complainant: complainantClean,
+        ticketDetails: ticketDetailsClean,
+        details: ticketDetailsClean,
+        responseDetails: responseDetailsClean,
+        response: responseDetailsClean,
+        actionTaken: actionTakenClean,
+        status: statusClean,
+        remarks: remarksClean,
+        is24Hours: active24h,
+        extraData: extraStr,
+        data: {
+            adminNo: adminNoClean,
+            platform: platformClean,
+            referralNo: refNoClean,
+            dateReceived: formattedDate,
+            category: categoryClean,
+            ticketType: ticketTypeClean,
+            complainantName: complainantClean,
+            ticketDetails: ticketDetailsClean,
+            responseDetails: responseDetailsClean,
+            actionTaken: actionTakenClean,
+            status: statusClean,
+            remarks: remarksClean,
+            is24Hours: active24h,
+            extraData: extraStr
+        },
+        "ADMIN NO.": adminNoClean,
+        "PLATFORM": platformClean,
+        "REFERRAL / TICKET NUMBER": refNoClean,
+        "REFERRAL / TICKET NO.": refNoClean,
+        "DATE RECEIVED": formattedDate,
+        "CATEGORY": categoryClean,
+        "TYPE OF TICKET": ticketTypeClean,
+        "NAME OF COMPLAINANT": complainantClean,
+        "DETAILS OF TICKET": ticketDetailsClean,
+        "DETAILS OF RESPONSE": responseDetailsClean,
+        "ACTION TAKEN": actionTakenClean,
+        "STATUS": statusClean,
+        "REMARKS": remarksClean
+    };
+}
+
+async function sendTicketPayloadToAppsScript(actionName, targetRowIdx, t) {
+    const payload = buildTicketPayload(actionName, targetRowIdx, t);
     const resp = await fetchWithRetry(APPS_SCRIPT_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify(payload)
-    }, TICKET_SAVE_RETRY_COUNT);
+    }, 2);
     const rawText = await resp.text();
     let resData = {};
     try { resData = rawText ? JSON.parse(rawText) : {}; } catch (e) { resData = {}; }
@@ -5450,510 +5028,1578 @@ async function sendTicketPayloadToAppsScript(actionName, targetRowIdx, ticketObj
     return { resData, errMsg };
 }
 
-async function persistTicketEntry(ticketObj, isEditing, targetIdx) {
+function openAddModal() {
+    populateDropdowns();
+    document.getElementById('editTicketIndex').value = '';
+    editingTicketOriginalState = null;
+    document.getElementById('ticketModalTitle').textContent = 'Add New Ticket Log';
+
+    const draft = lastTicketModalDraft;
+    lastTicketModalDraft = null;
+
+    const assignedAdminNo = currentUser.adminNo || deriveOperatorAdminNo(currentUser) || "ADMIN 36";
+    document.getElementById('formAdminNo').value = draft ? draft.adminNo : assignedAdminNo;
+    document.getElementById('formAdminNo').readOnly = true;
+    document.getElementById('formAdminNo').classList.add('opacity-75', 'cursor-not-allowed');
+
+    if (draft) {
+        document.getElementById('formPlatform').value = draft.platform;
+        document.getElementById('formReferralNo').value = draft.referralNo;
+        setSystemDateInputValue('formDateReceived', draft.dateReceived);
+        document.getElementById('formCategorySearch').value = draft.category;
+        document.getElementById('formTicketType').value = draft.ticketType;
+        document.getElementById('formComplainantName').value = draft.complainantName;
+        document.getElementById('formTicketDetails').value = draft.ticketDetails;
+        document.getElementById('formResponseDetails').value = draft.responseDetails;
+        document.getElementById('formActionTaken').value = draft.actionTaken;
+        document.getElementById('formStatus').value = draft.status;
+        document.getElementById('formRemarks').value = draft.remarks;
+        document.getElementById('formIs24Hours').checked = !!draft.is24Hours;
+    } else {
+        let defaultPlatform = currentUser.defaultPortal;
+        if (currentUser.portalStartTime && currentUser.portalEndTime) {
+            const now = new Date();
+            const curTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            if (curTime >= currentUser.portalStartTime && curTime <= currentUser.portalEndTime) {
+                defaultPlatform = currentUser.defaultPortal || defaultPlatform;
+            }
+        }
+        if (defaultPlatform && Array.from(document.getElementById('formPlatform').options).some(o => o.value === defaultPlatform)) {
+            document.getElementById('formPlatform').value = defaultPlatform;
+        }
+        setSystemDateInputValue('formDateReceived', getTodayISO());
+        document.getElementById('formCategorySearch').value = '';
+        document.getElementById('formComplainantName').value = '';
+        document.getElementById('formTicketDetails').value = '';
+        document.getElementById('formResponseDetails').value = '';
+        document.getElementById('formRemarks').value = '';
+        document.getElementById('formIs24Hours').checked = false;
+        const statusSel = document.getElementById('formStatus');
+        if (statusSel && Array.from(statusSel.options).some(o => o.value.toLowerCase() === 'closed')) {
+            statusSel.value = Array.from(statusSel.options).find(o => o.value.toLowerCase() === 'closed').value;
+        }
+        autoGenTicketNo(false);
+    }
+
+    if (AppState.settings.customFields) {
+        AppState.settings.customFields.forEach(cf => {
+            const el = document.getElementById(`customField_${cf.id}`);
+            if (el) el.value = (draft && draft.extraData && draft.extraData[cf.id]) || '';
+        });
+    }
+
+    document.getElementById('ticketModal').style.display = 'flex';
+}
+
+function openEditModal(idx) {
+    const t = AppState.tickets[idx];
+    if (!t) return;
+    if (!canMutateTicket(t)) {
+        showSystemAlert("Access Restricted", "You can only edit or delete ticket logs assigned to your own Admin account.", "🔒");
+        return;
+    }
+
+    populateDropdowns();
+    document.getElementById('editTicketIndex').value = idx;
+    editingTicketOriginalState = {
+        ...t,
+        extraData: { ...(t.extraData || {}) }
+    };
+    document.getElementById('ticketModalTitle').textContent = `Edit Ticket Log (#${t.referralNo})`;
+
+    document.getElementById('formAdminNo').value = t.adminNo;
+    document.getElementById('formAdminNo').readOnly = true;
+    document.getElementById('formAdminNo').classList.add('opacity-75', 'cursor-not-allowed');
+
+    const platSel = document.getElementById('formPlatform');
+    if (platSel && t.platform && !Array.from(platSel.options).some(o => o.value.toLowerCase() === t.platform.toLowerCase())) {
+        const opt = document.createElement('option');
+        opt.value = t.platform;
+        opt.textContent = t.platform;
+        platSel.appendChild(opt);
+    }
+    if (platSel) platSel.value = t.platform;
+
+    document.getElementById('formReferralNo').value = t.referralNo;
+    setSystemDateInputValue('formDateReceived', mmddyyyyToISO(t.dateReceived));
+    document.getElementById('formCategorySearch').value = t.category || '';
+
+    const typeSel = document.getElementById('formTicketType');
+    if (typeSel && t.ticketType && !Array.from(typeSel.options).some(o => o.value.toLowerCase() === t.ticketType.toLowerCase())) {
+        const opt = document.createElement('option');
+        opt.value = t.ticketType;
+        opt.textContent = t.ticketType;
+        typeSel.appendChild(opt);
+    }
+    if (typeSel) typeSel.value = t.ticketType;
+
+    document.getElementById('formComplainantName').value = t.complainantName;
+    document.getElementById('formTicketDetails').value = t.ticketDetails;
+    document.getElementById('formResponseDetails').value = t.responseDetails;
+
+    const actSel = document.getElementById('formActionTaken');
+    if (actSel && t.actionTaken && !Array.from(actSel.options).some(o => o.value.toLowerCase() === t.actionTaken.toLowerCase())) {
+        const opt = document.createElement('option');
+        opt.value = t.actionTaken;
+        opt.textContent = t.actionTaken;
+        actSel.appendChild(opt);
+    }
+    if (actSel) actSel.value = t.actionTaken;
+
+    const statSel = document.getElementById('formStatus');
+    if (statSel && t.status && !Array.from(statSel.options).some(o => o.value.toLowerCase() === t.status.toLowerCase())) {
+        const opt = document.createElement('option');
+        opt.value = t.status;
+        opt.textContent = t.status;
+        statSel.appendChild(opt);
+    }
+    if (statSel) statSel.value = t.status;
+
+    document.getElementById('formRemarks').value = t.remarks;
+
+    const isClosed = String(t.status || '').trim().toLowerCase() === 'closed';
+    const is24hEnabled = !isClosed && !!(t.is24Hours || (t.extraData && t.extraData.is24Hours));
+    document.getElementById('formIs24Hours').checked = is24hEnabled;
+
+    if (AppState.settings.customFields) {
+        AppState.settings.customFields.forEach(cf => {
+            const el = document.getElementById(`customField_${cf.id}`);
+            if (el) el.value = (t.extraData && t.extraData[cf.id]) || '';
+        });
+    }
+
+    document.getElementById('ticketModal').style.display = 'flex';
+}
+
+function closeTicketModal() {
+    const editIdxStr = document.getElementById('editTicketIndex')?.value;
+    if (editIdxStr === '') {
+        lastTicketModalDraft = {
+            adminNo: document.getElementById('formAdminNo')?.value || '',
+            platform: document.getElementById('formPlatform')?.value || '',
+            referralNo: document.getElementById('formReferralNo')?.value || '',
+            dateReceived: document.getElementById('formDateReceived')?.value || getTodayISO(),
+            category: document.getElementById('formCategorySearch')?.value || '',
+            ticketType: document.getElementById('formTicketType')?.value || '',
+            complainantName: document.getElementById('formComplainantName')?.value || '',
+            ticketDetails: document.getElementById('formTicketDetails')?.value || '',
+            responseDetails: document.getElementById('formResponseDetails')?.value || '',
+            actionTaken: document.getElementById('formActionTaken')?.value || '',
+            status: document.getElementById('formStatus')?.value || 'Closed',
+            remarks: document.getElementById('formRemarks')?.value || '',
+            is24Hours: !!document.getElementById('formIs24Hours')?.checked,
+            extraData: {}
+        };
+        if (AppState.settings.customFields) {
+            AppState.settings.customFields.forEach(cf => {
+                const el = document.getElementById(`customField_${cf.id}`);
+                if (el) lastTicketModalDraft.extraData[cf.id] = el.value;
+            });
+        }
+    }
+    const catList = document.getElementById('categoryDropdownList');
+    if (catList) catList.classList.add('hidden');
+    closeGlobalSystemDatePicker();
+    editingTicketOriginalState = null;
+    document.getElementById('ticketModal').style.display = 'none';
+}
+
+function getSelectedPlatformAutoGenConfig() {
+    const platformName = (document.getElementById('formPlatform')?.value || "").trim();
+    const found = (AppState.settings.platforms || []).find(p => {
+        const pName = typeof p === 'string' ? p : p.name;
+        return String(pName).trim().toLowerCase() === platformName.toLowerCase();
+    });
+    if (!found) return { autoGen: false, prefix: "CPAO" };
+    if (typeof found === 'string') return { autoGen: false, prefix: "CPAO" };
+    return {
+        autoGen: !!found.autoGen,
+        prefix: String(found.prefix || "CPAO").trim() || "CPAO"
+    };
+}
+
+function autoGenTicketNo(force = false) {
+    const editIdx = document.getElementById('editTicketIndex')?.value;
+    if (editIdx !== '' && !force) return;
+
+    const cfg = getSelectedPlatformAutoGenConfig();
+    const refInput = document.getElementById('formReferralNo');
+    if (!refInput) return;
+
+    if (!cfg.autoGen && !force) {
+        return;
+    }
+
+    const rawAdmin = (document.getElementById('formAdminNo')?.value || currentUser.adminNo || currentUser.username || "").trim();
+    const adminDigitsMatch = rawAdmin.match(/\d+/);
+    const adminNum = adminDigitsMatch ? adminDigitsMatch[0] : (rawAdmin.replace(/[^A-Za-z0-9]/g, '').toUpperCase() || "36");
+
+    const dateVal = document.getElementById('formDateReceived')?.value || getTodayISO();
+    const mdy = isoToMMDDYYYY(dateVal);
+    const cleanDateNoSlash = mdy.replace(/\//g, "");
+
+    let maxSeq = 0;
+    const prefixEsc = cfg.prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^${prefixEsc}-${cleanDateNoSlash}-${adminNum}-(\d+)$`, 'i');
+
+    (AppState.tickets || []).forEach(t => {
+        const ref = String(t.referralNo || "").trim();
+        const m = ref.match(regex);
+        if (m && m[1]) {
+            const seqVal = parseInt(m[1], 10);
+            if (!isNaN(seqVal) && seqVal > maxSeq) maxSeq = seqVal;
+        }
+    });
+
+    const nextSeq = String(maxSeq + 1).padStart(2, '0');
+    refInput.value = `${cfg.prefix}-${cleanDateNoSlash}-${adminNum}-${nextSeq}`;
+}
+
+function saveTicketForm(e) {
+    e.preventDefault();
+    if (isSavingTicket) return;
+
+    const editIdxStr = document.getElementById('editTicketIndex').value;
+    const isEditing = editIdxStr !== '';
+    const idx = isEditing ? parseInt(editIdxStr, 10) : -1;
+
+    if (isEditing && AppState.tickets[idx] && !canMutateTicket(AppState.tickets[idx])) {
+        showSystemAlert("Access Restricted", "You can only modify ticket logs assigned to your own Admin account.", "🔒");
+        return;
+    }
+
+    const enforcedAdminNo = isEditing && AppState.tickets[idx]
+        ? String(AppState.tickets[idx].adminNo || '').trim()
+        : (currentUser.adminNo || deriveOperatorAdminNo(currentUser) || document.getElementById('formAdminNo').value.trim());
+
+    const extraData = isEditing && AppState.tickets[idx] && AppState.tickets[idx].extraData
+        ? { ...AppState.tickets[idx].extraData }
+        : {};
+    if (AppState.settings.customFields) {
+        AppState.settings.customFields.forEach(cf => {
+            const el = document.getElementById(`customField_${cf.id}`);
+            if (el) extraData[cf.id] = el.value.trim();
+        });
+    }
+
+    const statusVal = document.getElementById('formStatus').value.trim();
+    const isClosed = statusVal.toLowerCase() === 'closed';
+    const is24hChecked = !isClosed && !!document.getElementById('formIs24Hours').checked;
+
+    const prev24hEnabled = !!(isEditing && AppState.tickets[idx] && (AppState.tickets[idx].is24Hours || (AppState.tickets[idx].extraData && AppState.tickets[idx].extraData.is24Hours)));
+    const prevStartedAt = (isEditing && AppState.tickets[idx]?.extraData?.timer24hStartedAt) || null;
+    const prevDueAt = (isEditing && AppState.tickets[idx]?.extraData?.timer24hDueAt) || null;
+    const prevRemindedAt = (isEditing && AppState.tickets[idx]?.extraData?.timer24hRemindedAt) || null;
+
+    if (is24hChecked) {
+        if (!prev24hEnabled || !prevDueAt || !prevStartedAt) {
+            const startedNow = Date.now();
+            extraData.timer24hStartedAt = startedNow;
+            extraData.timer24hDueAt = startedNow + TIMER_24H_DURATION_MS;
+            extraData.timer24hRemindedAt = null;
+        } else {
+            extraData.timer24hStartedAt = prevStartedAt;
+            extraData.timer24hDueAt = prevDueAt;
+            extraData.timer24hRemindedAt = prevRemindedAt;
+        }
+        extraData.is24Hours = true;
+    } else {
+        extraData.is24Hours = false;
+        if (isClosed) {
+            extraData.timer24hStartedAt = null;
+            extraData.timer24hDueAt = null;
+            extraData.timer24hRemindedAt = null;
+        }
+    }
+
+    const refNoTrimmed = document.getElementById('formReferralNo').value.trim();
+    const newTicket = {
+        rowIndex: isEditing && AppState.tickets[idx] ? AppState.tickets[idx].rowIndex : null,
+        adminNo: enforcedAdminNo,
+        platform: document.getElementById('formPlatform').value.trim(),
+        referralNo: refNoTrimmed,
+        dateReceived: isoToMMDDYYYY(document.getElementById('formDateReceived').value),
+        category: (document.getElementById('formCategorySearch')?.value || '').trim(),
+        ticketType: document.getElementById('formTicketType').value.trim(),
+        complainantName: document.getElementById('formComplainantName').value.trim(),
+        ticketDetails: document.getElementById('formTicketDetails').value.trim(),
+        responseDetails: document.getElementById('formResponseDetails').value.trim(),
+        actionTaken: document.getElementById('formActionTaken').value.trim(),
+        status: statusVal,
+        remarks: document.getElementById('formRemarks').value.trim(),
+        is24Hours: is24hChecked,
+        extraData
+    };
+
+    if (!isEditing && refNoTrimmed) {
+        const dupIdx = AppState.tickets.findIndex(item => String(item.referralNo || '').trim().toLowerCase() === refNoTrimmed.toLowerCase());
+        if (dupIdx !== -1) {
+            const existing = AppState.tickets[dupIdx];
+            pendingTicketSubmission = { newTicket, isEditing, idx };
+            document.getElementById('dupExistingInfo').innerHTML = `
+                <strong>Existing Ticket #:</strong> <span class="font-mono text-amber-300">${escapeHtml(existing.referralNo)}</span><br>
+                <strong>Complainant:</strong> ${escapeHtml(existing.complainantName || '—')}<br>
+                <strong>Date Received:</strong> <span class="font-mono">${escapeHtml(existing.dateReceived || '—')}</span><br>
+                <strong>Status:</strong> ${escapeHtml(existing.status || '—')}
+            `;
+            document.getElementById('duplicateWarningModal').style.display = 'flex';
+            return;
+        }
+    }
+
+    commitTicketSubmission(newTicket, isEditing, idx);
+}
+
+function cancelDuplicateTicket() {
+    pendingTicketSubmission = null;
+    document.getElementById('duplicateWarningModal').style.display = 'none';
+}
+
+function proceedWithDuplicateTicket() {
+    const sub = pendingTicketSubmission;
+    pendingTicketSubmission = null;
+    document.getElementById('duplicateWarningModal').style.display = 'none';
+    if (!sub) return;
+    commitTicketSubmission(sub.newTicket, sub.isEditing, sub.idx);
+}
+
+async function commitTicketSubmission(newTicket, isEditing, idx) {
     if (isSavingTicket) return;
     isSavingTicket = true;
-    updateSyncStatusBadge("syncing");
-
-    const submitBtn = document.querySelector('#ticketForm button[type="submit"]');
-    const originalBtnText = submitBtn ? submitBtn.textContent : '💾 Save Ticket Log';
+    const submitBtn = document.querySelector('#ticketModal button[type="submit"]');
+    const originalBtnText = submitBtn ? submitBtn.textContent : "Save Ticket Log";
     if (submitBtn) {
         submitBtn.disabled = true;
-        submitBtn.textContent = '⏳ Saving...';
+        submitBtn.textContent = "Saving...";
     }
 
-    let resolvedRowIdx = isEditing && AppState.tickets[targetIdx]
-        ? (AppState.tickets[targetIdx].rowIndex || (targetIdx + 2))
-        : null;
+    const previousTicketsSnapshot = AppState.tickets.map(item => ({
+        ...item,
+        extraData: { ...(item.extraData || {}) }
+    }));
 
-    if (isEditing && targetIdx >= 0 && AppState.tickets[targetIdx]) {
-        AppState.tickets[targetIdx] = { ...ticketObj, rowIndex: resolvedRowIdx };
-    } else {
-        AppState.tickets.push({ ...ticketObj });
-    }
-    saveStorage();
-    renderTable();
+    try {
+        let targetRowIdx = null;
+        if (isEditing && idx >= 0 && AppState.tickets[idx]) {
+            const prevTicket = AppState.tickets[idx];
+            targetRowIdx = prevTicket.rowIndex || (idx + 2);
+            newTicket.rowIndex = targetRowIdx;
+            AppState.tickets[idx] = newTicket;
+        } else {
+            AppState.tickets.push(newTicket);
+        }
 
-    lastTicketModalDraft = null;
-    closeTicketModal(true);
+        lastTicketModalDraft = null;
+        saveStorage();
+        renderTable();
+        updateKPIs();
+        render24HourReminderBanner();
+        document.getElementById('ticketModal').style.display = 'none';
+        updateSyncStatusBadge("syncing");
 
-    const clientKey = `${String(ticketObj.referralNo || '').trim().toLowerCase()}|${String(ticketObj.dateReceived || '').trim()}|${String(ticketObj.complainantName || '').trim().toLowerCase()}`;
-    enqueuePendingTicketSync(ticketObj, isEditing, resolvedRowIdx);
+        const storageKey = isEditing ? LAST_WORKING_UPDATE_ACTION_KEY : LAST_WORKING_ADD_ACTION_KEY;
+        const cachedAction = localStorage.getItem(storageKey);
+        const actionCandidates = Array.from(new Set(
+            (isEditing
+                ? [cachedAction, "updateLog", "updateTicket", "update", "editLog", "edit", "saveLog", "save"]
+                : [cachedAction, "addLog", "addTicket", "createLog", "createTicket", "create", "add", "insert", "append", "saveLog", "save"]
+            ).filter(Boolean)
+        ));
 
-    const storageKey = isEditing ? LAST_WORKING_UPDATE_ACTION_KEY : LAST_WORKING_ADD_ACTION_KEY;
-    const cachedAction = localStorage.getItem(storageKey);
-    const actionCandidates = Array.from(new Set(
-        (isEditing
-            ? [cachedAction, "updateLog", "updateTicket", "update", "editLog", "edit", "saveLog", "save"]
-            : [cachedAction, "addLog", "addTicket", "createLog", "createTicket", "create", "add", "insert", "append", "saveLog", "save"]
-        ).filter(Boolean)
-    ));
+        let lastErrMsg = "";
+        let savedInCloud = false;
 
-    let syncedToSheet = false;
-    let lastErrorMessage = "";
+        for (const actionName of actionCandidates) {
+            try {
+                const { resData, errMsg } = await sendTicketPayloadToAppsScript(actionName, targetRowIdx, newTicket);
+                if (!errMsg) {
+                    localStorage.setItem(storageKey, actionName);
+                    savedInCloud = true;
 
-    for (const actionName of actionCandidates) {
-        try {
-            const { resData, errMsg } = await sendTicketPayloadToAppsScript(actionName, resolvedRowIdx, ticketObj);
-            if (!errMsg) {
-                syncedToSheet = true;
-                localStorage.setItem(storageKey, actionName);
-                removePendingTicketSync(clientKey);
-                if (resData && resData.rowIndex) {
+                    const clientKey = `${String(newTicket.referralNo || '').trim().toLowerCase()}|${String(newTicket.dateReceived || '').trim()}|${String(newTicket.complainantName || '').trim().toLowerCase()}`;
+                    removePendingTicketSync(clientKey);
+
                     const savedIdx = AppState.tickets.findIndex(item =>
-                        String(item.referralNo || '').trim().toLowerCase() === String(ticketObj.referralNo || '').trim().toLowerCase() &&
-                        String(item.dateReceived || '').trim() === String(ticketObj.dateReceived || '').trim()
+                        String(item.referralNo || '').trim().toLowerCase() === String(newTicket.referralNo || '').trim().toLowerCase() &&
+                        String(item.dateReceived || '').trim() === String(newTicket.dateReceived || '').trim()
                     );
-                    if (savedIdx >= 0) {
+                    if (savedIdx >= 0 && resData && resData.rowIndex) {
                         AppState.tickets[savedIdx].rowIndex = resData.rowIndex;
                         saveStorage();
                     }
+
+                    updateSyncStatusBadge(loadPendingSyncQueue().length > 0 ? "queued" : "synced");
+                    showToast(isEditing ? "Ticket updated & synced to Google Sheets." : "Ticket saved & synced to Google Sheets.");
+                    break;
                 }
-                break;
+                lastErrMsg = errMsg;
+                if (!isUnknownActionErrorMessage(errMsg)) {
+                    break;
+                }
+            } catch (networkErr) {
+                lastErrMsg = networkErr && networkErr.message ? networkErr.message : "Network error";
             }
-            lastErrorMessage = errMsg;
-            if (!isUnknownActionErrorMessage(errMsg)) {
-                break;
-            }
-        } catch (err) {
-            lastErrorMessage = err && err.message ? err.message : "Network error";
         }
-    }
 
-    if (submitBtn) {
-        submitBtn.disabled = false;
-        submitBtn.textContent = originalBtnText;
-    }
-    isSavingTicket = false;
-    editingTicketOriginalState = null;
-
-    if (syncedToSheet) {
-        updateSyncStatusBadge("synced");
-        showToast(isEditing ? "Ticket updated & synced to Google Sheets!" : "Ticket saved & synced to Google Sheets!");
-    } else {
-        updateSyncStatusBadge("queued");
-        showToast("Saved locally & queued for cloud sync.");
-        if (!hasShownScriptActionNotice && lastErrorMessage) {
-            hasShownScriptActionNotice = true;
-            console.warn("Google Sheets sync queued for retry:", lastErrorMessage);
+        if (!savedInCloud) {
+            enqueuePendingTicketSync(newTicket, isEditing, targetRowIdx);
+            updateSyncStatusBadge("queued");
+            showToast(isEditing ? "Ticket updated locally (queued for Google Sheets sync)." : "Ticket saved locally (queued for Google Sheets sync).");
+            console.warn("Ticket saved locally and queued for background sync:", lastErrMsg || previousTicketsSnapshot.length);
+        }
+    } finally {
+        isSavingTicket = false;
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = originalBtnText;
         }
     }
 }
 
-async function deleteTicket(index) {
-    const t = AppState.tickets[index];
+async function deleteTicket(idx) {
+    const t = AppState.tickets[idx];
     if (!t) return;
     if (!canMutateTicket(t)) {
-        showSystemAlert("View Only — Not Ticket Owner", "You can only delete tickets owned by your account.", "🔒");
+        showSystemAlert("Access Restricted", "You can only delete ticket logs assigned to your own Admin account.", "🔒");
         return;
     }
+
     showSystemConfirm("Delete Ticket", `Are you sure you want to delete Ticket #${t.referralNo}?`, async () => {
-        const targetRow = t.rowIndex || (index + 2);
-        AppState.tickets.splice(index, 1);
+        const targetRowIdx = t.rowIndex || (idx + 2);
+        const clientKey = `${String(t.referralNo || '').trim().toLowerCase()}|${String(t.dateReceived || '').trim()}|${String(t.complainantName || '').trim().toLowerCase()}`;
+        removePendingTicketSync(clientKey);
+
+        AppState.tickets.splice(idx, 1);
         saveStorage();
         renderTable();
-        showToast("Ticket deleted.");
+        updateKPIs();
+        render24HourReminderBanner();
+
         try {
-            await fetchWithRetry(APPS_SCRIPT_URL, {
+            const response = await fetchWithRetry(APPS_SCRIPT_URL, {
                 method: "POST",
                 headers: { "Content-Type": "text/plain;charset=utf-8" },
-                body: JSON.stringify({ action: "deleteLog", rowIndex: targetRow, referralNo: t.referralNo })
+                body: JSON.stringify({
+                    action: "deleteLog",
+                    sheet: "Logs",
+                    rowIndex: targetRowIdx,
+                    row: targetRowIdx,
+                    referralNo: t.referralNo,
+                    ticketNo: t.referralNo
+                })
             }, 2);
-        } catch(e) {}
+            const rawText = await response.text();
+            let resData = {};
+            try { resData = rawText ? JSON.parse(rawText) : {}; } catch (e) { resData = {}; }
+            const errMsg = (resData && (resData.error || (resData.success === false && (resData.message || "Delete failed")))) || "";
+            if (errMsg) {
+                throw new Error(errMsg);
+            }
+            updateSyncStatusBadge(loadPendingSyncQueue().length > 0 ? "queued" : "synced");
+            showToast("Ticket deleted and synced to Google Sheets.");
+        } catch(e) {
+            console.warn("Delete cloud sync failed:", e);
+            updateSyncStatusBadge("error");
+            showToast("Ticket removed locally; cloud delete failed.");
+        }
     });
 }
 
-function changeCalcMonth(dir) {
-    calcCurrentMonth += dir;
+function get24HourDueTimestamp(ticket) {
+    if (!ticket) return null;
+    const isClosed = String(ticket.status || '').trim().toLowerCase() === 'closed';
+    const isEnabled = !isClosed && !!(ticket.is24Hours || (ticket.extraData && ticket.extraData.is24Hours));
+    if (!isEnabled) return null;
+
+    const extra = ticket.extraData || {};
+    if (extra.timer24hDueAt) {
+        const parsedDue = Number(extra.timer24hDueAt);
+        if (!isNaN(parsedDue) && parsedDue > 0) return parsedDue;
+    }
+
+    const baseDateIso = mmddyyyyToISO(ticket.dateReceived);
+    const baseMs = new Date(baseDateIso + "T08:00:00").getTime();
+    if (!isNaN(baseMs) && baseMs > 0) {
+        return baseMs + TIMER_24H_DURATION_MS;
+    }
+    return Date.now() + TIMER_24H_DURATION_MS;
+}
+
+function render24HourReminderBanner() {
+    if (AppState.settings?.notifications && AppState.settings.notifications.overdue24hBanner === false) {
+        const banner = document.getElementById('reminder24hBanner');
+        if (banner) banner.classList.add('hidden');
+        return;
+    }
+    const banner = document.getElementById('reminder24hBanner');
+    const textEl = document.getElementById('reminder24hBannerText');
+    if (!banner || !textEl) return;
+
+    const now = Date.now();
+    const activeItems = (AppState.tickets || []).filter(t => get24HourDueTimestamp(t) !== null);
+    if (!activeItems.length) {
+        banner.classList.add('hidden');
+        return;
+    }
+
+    const dueNow = activeItems.filter(t => now >= get24HourDueTimestamp(t));
+    if (dueNow.length > 0) {
+        const sampleRefs = dueNow.slice(0, 3).map(t => `#${t.referralNo || 'N/A'}`).join(', ');
+        textEl.textContent = `24-Hour Follow-Up Due: ${dueNow.length} pending ticket(s) reached 24 hours (${sampleRefs}${dueNow.length > 3 ? ', ...' : ''}). Please review and update action/status.`;
+        banner.classList.remove('hidden');
+    } else {
+        banner.classList.add('hidden');
+    }
+}
+
+function renderTable() {
+    const tbody = document.getElementById('ticketTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const dataTableEl = document.querySelector('#viewLogs .data-table');
+    if (dataTableEl) {
+        dataTableEl.classList.toggle('dense-rows', !!AppState.settings?.preferences?.denseTableMode);
+    }
+
+    const q = (document.getElementById('searchInput')?.value || '').toLowerCase();
+    const platFilter = document.getElementById('filterPlatform')?.value || '';
+    const statFilter = document.getElementById('filterStatus')?.value || '';
+    const dateFilter = document.getElementById('filterDate')?.value || '';
+    const scopeFilter = document.getElementById('superadminViewScope')?.value || 'all';
+
+    let myAdminDigits = '';
+    if (scopeFilter === 'my') {
+        const rawAdmin = String(currentUser.adminNo || deriveOperatorAdminNo(currentUser) || currentUser.username || '').trim().toLowerCase();
+        const digits = rawAdmin.replace(/\D/g, '');
+        myAdminDigits = digits || rawAdmin;
+    }
+
+    let filtered = AppState.tickets.filter((t, idx) => {
+        t._origIndex = idx;
+        if (scopeFilter === 'my') {
+            const tAdminRaw = String(t.adminNo || '').trim().toLowerCase();
+            const tDigits = tAdminRaw.replace(/\D/g, '');
+            const matchesAdmin = myAdminDigits
+                ? (tDigits === myAdminDigits || tAdminRaw.includes(myAdminDigits))
+                : isTicketOwnedByCurrentUser(t);
+            if (!matchesAdmin) return false;
+        }
+        if (platFilter && t.platform !== platFilter) return false;
+        if (statFilter && t.status !== statFilter) return false;
+        if (dateFilter) {
+            const filterMDY = isoToMMDDYYYY(dateFilter);
+            const cleanTD = formatCleanDate(t.dateReceived);
+            if (cleanTD !== filterMDY && mmddyyyyToISO(cleanTD) !== dateFilter) return false;
+        }
+        if (q) {
+            let match = (t.referralNo && t.referralNo.toLowerCase().includes(q)) ||
+                        (t.complainantName && t.complainantName.toLowerCase().includes(q)) ||
+                        (t.category && t.category.toLowerCase().includes(q)) ||
+                        (t.adminNo && t.adminNo.toLowerCase().includes(q));
+            if(!match && t.extraData) {
+                match = Object.values(t.extraData).some(val => String(val).toLowerCase().includes(q));
+            }
+            if (!match) return false;
+        }
+        return true;
+    });
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="14" class="text-center py-8 text-slate-400 text-xs">No ticket logs found matching your filters. Click <strong>+ New Log</strong> above to add one!</td></tr>`;
+        return;
+    }
+
+    const userColorMap = {};
+    AppState.users.forEach(u => {
+        if (u.username && u.logColor && u.logColor !== 'Default') {
+            userColorMap[u.username.toLowerCase()] = u.logColor;
+        }
+    });
+    if (currentUser.username && currentUser.logColor && currentUser.logColor !== 'Default') {
+        userColorMap[currentUser.username.toLowerCase()] = currentUser.logColor;
+    }
+
+    filtered.forEach((t, idx) => {
+        const tr = document.createElement('tr');
+        const isClosed = t.status && t.status.toLowerCase() === 'closed';
+        const badgeClass = isClosed ? 'badge-closed' : 'badge-pending';
+        const statusText = t.status || 'Closed';
+
+        const adminClean = (t.adminNo || '').trim().toLowerCase();
+        const adminNumMatch = adminClean.match(/\d+/);
+        let rowColor = null;
+        if (userColorMap[adminClean]) rowColor = userColorMap[adminClean];
+        else if (adminNumMatch && userColorMap['admin' + adminNumMatch[0]]) rowColor = userColorMap['admin' + adminNumMatch[0]];
+        else if (currentUser.logColor && currentUser.logColor !== 'Default') {
+            if (isTicketOwnedByCurrentUser(t)) rowColor = currentUser.logColor;
+        }
+
+        if (rowColor && rowColor !== 'Default') {
+            tr.style.backgroundColor = rowColor + '42';
+            tr.style.borderLeft = `4px solid ${rowColor}`;
+        }
+
+        const is24hActive = !isClosed && !!(t.is24Hours || (t.extraData && t.extraData.is24Hours));
+        const dueMs = get24HourDueTimestamp(t);
+        const is24hOverdue = is24hActive && dueMs && Date.now() >= dueMs;
+        const timerBadgeHtml = is24hActive
+            ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 mt-1 rounded text-[10px] font-bold ${is24hOverdue ? 'bg-rose-950 text-rose-300 border border-rose-600/70' : 'bg-amber-950/90 text-amber-300 border border-amber-600/60'}">${is24hOverdue ? '⏰ 24H DUE' : '⏱️ 24H TIMER'}</span>`
+            : '';
+
+        const canEditThisRow = canMutateTicket(t);
+        const canEndorseThisRow = canEndorseTicket(t);
+
+        const editBtnHtml = canEditThisRow
+            ? `<button type="button" onclick="openEditModal(${t._origIndex})" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded text-[10px] font-bold" title="Edit">✏️</button>`
+            : `<button type="button" disabled class="px-2 py-1 bg-slate-900/50 text-slate-600 border border-slate-800/60 rounded text-[10px] font-bold cursor-not-allowed opacity-45" title="Own log only">✏️</button>`;
+
+        const deleteBtnHtml = canEditThisRow
+            ? `<button type="button" onclick="deleteTicket(${t._origIndex})" class="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-[10px] font-bold" title="Delete">🗑️</button>`
+            : `<button type="button" disabled class="px-2 py-1 bg-slate-900/50 text-slate-600 border border-slate-800/60 rounded text-[10px] font-bold cursor-not-allowed opacity-45" title="Own log only">🗑️</button>`;
+
+        const endorseBtnHtml = canEndorseThisRow
+            ? `<button type="button" onclick="openEndorseModal(${t._origIndex})" class="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[10px] font-bold" title="Endorse">📄</button>`
+            : `<button type="button" disabled class="px-2 py-1 bg-slate-900/50 text-slate-600 border border-slate-800/60 rounded text-[10px] font-bold cursor-not-allowed opacity-45" title="Own log only">📄</button>`;
+
+        const rowCellsHtml = `
+            <td class="text-slate-400 font-mono text-[11px] text-center">${idx + 1}</td>
+            <td class="text-center whitespace-nowrap">
+                <div class="inline-flex items-center gap-1">
+                    ${editBtnHtml}
+                    ${deleteBtnHtml}
+                    ${endorseBtnHtml}
+                </div>
+            </td>
+            <td class="font-bold text-slate-200 whitespace-nowrap">${escapeHtml(t.adminNo)}</td>
+            <td><span class="chip-pill">${escapeHtml(t.platform)}</span></td>
+            <td class="font-mono font-bold text-amber-400 whitespace-nowrap">${escapeHtml(t.referralNo)}</td>
+            <td class="font-mono text-slate-300 whitespace-nowrap">${escapeHtml(formatCleanDate(t.dateReceived))}</td>
+            <td class="font-semibold text-white">${escapeHtml(t.category)}</td>
+            <td class="text-slate-300 text-[11px]">${escapeHtml(t.ticketType)}</td>
+            <td class="font-semibold text-slate-100">${escapeHtml(t.complainantName)}</td>
+            <td class="text-slate-300 text-[11px] max-w-xs">${escapeHtml(t.ticketDetails)}</td>
+            <td class="text-slate-300 text-[11px] max-w-xs">${escapeHtml(t.responseDetails)}</td>
+            <td class="text-[11px] text-sky-400 font-semibold">${escapeHtml(t.actionTaken)}</td>
+            <td class="text-center whitespace-nowrap">
+                <div class="flex flex-col items-center">
+                    <span class="${badgeClass}">${escapeHtml(statusText)}</span>
+                    ${timerBadgeHtml}
+                </div>
+            </td>
+            <td class="text-[11px] text-slate-400 italic">${escapeHtml(t.remarks)}</td>
+        `;
+
+        tr.innerHTML = rowCellsHtml;
+        tbody.appendChild(tr);
+    });
+}
+
+function updateKPIs() {
+    let total = AppState.tickets.length;
+    let closed = AppState.tickets.filter(t => t.status && t.status.toLowerCase() === 'closed').length;
+    let pending = total - closed;
+    let rate = total > 0 ? ((closed / total) * 100).toFixed(1) : 0;
+
+    if(document.getElementById('kpiTotal')) document.getElementById('kpiTotal').textContent = total;
+    if(document.getElementById('kpiClosed')) document.getElementById('kpiClosed').textContent = closed;
+    if(document.getElementById('kpiPending')) document.getElementById('kpiPending').textContent = pending;
+    if(document.getElementById('kpiRate')) document.getElementById('kpiRate').textContent = rate + '%';
+}
+
+function renderSnippets() {
+    const container = document.getElementById('snippetCardsContainer');
+    if(!container) return;
+    container.innerHTML = '';
+    if(!AppState.templates || AppState.templates.length === 0) return;
+
+    AppState.templates.forEach((s, idx) => {
+        const card = document.createElement('div');
+        card.className = 'glass-panel p-4 rounded-xl flex flex-col justify-between gap-3 border border-slate-700/80 hover:border-sky-500/50 transition';
+        card.innerHTML = `
+            <div>
+                <div class="flex items-center justify-between mb-1.5">
+                    <h4 class="font-bold text-xs text-sky-400 uppercase tracking-wider">${escapeHtml(s.title)}</h4>
+                    <button type="button" onclick="deleteSnippet(${idx})" class="text-slate-500 hover:text-rose-400 text-xs">✕</button>
+                </div>
+                <p class="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed bg-slate-950/60 p-2.5 rounded border border-slate-800/80">${escapeHtml(s.text)}</p>
+            </div>
+            <button type="button" onclick="copySnippetText(${idx})" class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded shadow transition flex items-center justify-center gap-1.5 border border-slate-700">
+                <span>📋</span> <span>Copy Response</span>
+            </button>
+        `;
+        container.appendChild(card);
+    });
+}
+
+function copySnippetText(idx) {
+    const s = AppState.templates[idx];
+    if(!s) return;
+    navigator.clipboard.writeText(s.text).then(() => showToast("Response copied to clipboard!"));
+}
+
+function openSnippetModal() { document.getElementById('snippetModal').style.display = 'flex'; }
+function closeSnippetModal() { document.getElementById('snippetModal').style.display = 'none'; }
+
+function saveSnippet() {
+    const title = document.getElementById('newSnippetTitle').value.trim();
+    const text = document.getElementById('newSnippetText').value.trim();
+    if(!title || !text) { showSystemAlert("Missing Fields", "Please provide both a title and response text.", "⚠️"); return; }
+    AppState.templates.push({ title, text });
+    localStorage.setItem('LTO_CPAO_SNIPPETS_2026', JSON.stringify(AppState.templates));
+    document.getElementById('newSnippetTitle').value = '';
+    document.getElementById('newSnippetText').value = '';
+    closeSnippetModal();
+    renderSnippets();
+    showToast("Response snippet saved!");
+}
+
+function deleteSnippet(idx) {
+    showSystemConfirm("Delete Snippet", "Are you sure you want to delete this snippet?", () => {
+        AppState.templates.splice(idx, 1);
+        localStorage.setItem('LTO_CPAO_SNIPPETS_2026', JSON.stringify(AppState.templates));
+        renderSnippets();
+    });
+}
+
+function isWeekendDay(year, monthIndex, day) {
+    const dow = new Date(year, monthIndex, day).getDay();
+    return dow === 0 || dow === 6;
+}
+
+function isDateNonWorking(isoStr) {
+    if (!isoStr) return false;
+    const parts = isoStr.split('-');
+    if (parts.length !== 3) return false;
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    const weekend = isWeekendDay(y, m, d);
+    const manuallyToggled = (AppState.toggledOffDates || []).includes(isoStr);
+    return weekend ? !manuallyToggled : manuallyToggled;
+}
+
+function addWorkingDays(startDateStr, daysToAdd) {
+    let iso = startDateStr.includes('/') ? mmddyyyyToISO(startDateStr) : startDateStr;
+    let parts = iso.split('-');
+    if (parts.length !== 3) return startDateStr;
+
+    let current = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    let added = 0;
+
+    while (added < daysToAdd) {
+        current.setDate(current.getDate() + 1);
+        const y = current.getFullYear();
+        const m = current.getMonth();
+        const d = current.getDate();
+        const checkIso = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        if (!isDateNonWorking(checkIso)) added++;
+    }
+
+    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    return `${months[current.getMonth()]} ${current.getDate()}, ${current.getFullYear()}`;
+}
+
+function runWorkdayCalculator() {
+    const startIso = document.getElementById('calcStartDate')?.value;
+    if (!startIso) return;
+    setCalcDateValue(startIso);
+
+    const dueDateStr = addWorkingDays(startIso, 20);
+    const summaryEl = document.getElementById('calcResultSummary');
+    if (summaryEl) {
+        summaryEl.innerHTML = `
+            <div><strong>Start Date:</strong> <span class="font-mono text-white">${isoToMMDDYYYY(startIso)}</span></div>
+            <div><strong>20th Working Day Due Date:</strong> <span class="font-extrabold text-emerald-400">${escapeHtml(dueDateStr)}</span></div>
+            <div class="text-[11px] text-slate-400">Excludes weekends unless manually toggled ON, and excludes configured holidays/non-working dates.</div>
+        `;
+    }
+    renderCalcCalendar();
+}
+
+function changeCalcMonth(delta) {
+    calcCurrentMonth += delta;
     if (calcCurrentMonth > 11) { calcCurrentMonth = 0; calcCurrentYear++; }
     if (calcCurrentMonth < 0) { calcCurrentMonth = 11; calcCurrentYear--; }
     renderCalcCalendar();
 }
 
-function renderSavedOffDatesSummary() {
-    const listEl = document.getElementById('savedOffDatesList');
-    const countEl = document.getElementById('savedOffDatesCount');
-    if (!listEl) return;
-
-    const sortedDates = Array.from(new Set(AppState.toggledOffDates || [])).sort();
-    if (countEl) countEl.textContent = `${sortedDates.length} Off Day${sortedDates.length === 1 ? '' : 's'}`;
-
-    if (sortedDates.length === 0) {
-        listEl.innerHTML = `<span class="text-[11px] text-slate-500 italic">No custom off dates saved yet.</span>`;
-        return;
-    }
-
-    const canEdit = canUserEditWorkdayOffDates();
-    listEl.innerHTML = sortedDates.map(iso => `
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/70 border border-rose-700/60 text-rose-200 font-mono text-[11px] font-bold">
-            <span>${escapeHtml(isoToMMDDYYYY(iso))} (${escapeHtml(iso)})</span>
-            ${canEdit ? `<button type="button" onclick="removeSpecificOffDate('${iso}')" title="Set back to Working Day" class="text-rose-300 hover:text-white font-extrabold ml-0.5">✕</button>` : ''}
-        </span>
-    `).join('');
-}
-
-async function removeSpecificOffDate(isoStr) {
+async function toggleCalendarOffDate(isoStr) {
     if (!canUserEditWorkdayOffDates()) {
-        showSystemAlert("Access Restricted", "Only AdminTL or Super Admin can modify working/non-working calendar days.", "🔒");
+        showSystemAlert("Access Restricted", "Only AdminTL or Super Admin can modify non-working / holiday calendar dates.", "🔒");
         return;
     }
-    AppState.toggledOffDates = (AppState.toggledOffDates || []).filter(d => d !== isoStr);
+    const idx = AppState.toggledOffDates.indexOf(isoStr);
+    if (idx >= 0) {
+        AppState.toggledOffDates.splice(idx, 1);
+    } else {
+        AppState.toggledOffDates.push(isoStr);
+    }
+    AppState.toggledOffDates.sort();
     await saveOffDatesStorage(true);
     renderCalcCalendar();
     runWorkdayCalculator();
-    showToast(`${isoToMMDDYYYY(isoStr)} set to Working Day.`);
 }
 
-async function resetAllOffDates() {
+async function resetOffDates() {
     if (!canUserEditWorkdayOffDates()) {
-        showSystemAlert("Access Restricted", "Only AdminTL or Super Admin can reset non-working calendar days.", "🔒");
+        showSystemAlert("Access Restricted", "Only AdminTL or Super Admin can reset non-working / holiday calendar dates.", "🔒");
         return;
     }
-    showSystemConfirm("Reset Non-Working Days", "Clear all custom toggled off dates and restore default weekday schedule?", async () => {
+    showSystemConfirm("Reset Off Dates", "Clear all manually toggled non-working / holiday dates?", async () => {
         AppState.toggledOffDates = [];
         await saveOffDatesStorage(true);
         renderCalcCalendar();
         runWorkdayCalculator();
-        showToast("All custom off dates cleared.");
+        showToast("All manually toggled off dates cleared.");
     });
+}
+
+function renderSavedOffDatesSummary() {
+    const container = document.getElementById('savedOffDatesSummary');
+    if (!container) return;
+    const list = AppState.toggledOffDates || [];
+    const canEdit = canUserEditWorkdayOffDates();
+    if (list.length === 0) {
+        container.innerHTML = `<span class="text-[11px] text-slate-500 italic">No manually toggled dates saved.</span>`;
+        return;
+    }
+    container.innerHTML = list.map(iso => `
+        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-[11px] font-mono text-amber-300">
+            ${escapeHtml(isoToMMDDYYYY(iso))}
+            ${canEdit ? `<button type="button" onclick="toggleCalendarOffDate('${iso}')" class="off-date-remove-btn text-rose-400 hover:text-rose-200 font-bold">✕</button>` : ''}
+        </span>
+    `).join('');
 }
 
 function renderCalcCalendar() {
-    const grid = document.getElementById('calcCalendarDays');
-    const label = document.getElementById('calcMonthYearLabel');
-    if(!grid || !label) return;
-    const monthsNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    label.textContent = `${monthsNames[calcCurrentMonth]} ${calcCurrentYear}`;
+    const grid = document.getElementById('calcCalendarGrid');
+    const title = document.getElementById('calcMonthTitle');
+    if (!grid || !title) return;
 
-    let html = "";
+    const monthsNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    title.textContent = `${monthsNames[calcCurrentMonth]} ${calcCurrentYear}`;
+
+    const startIso = document.getElementById('calcStartDate')?.value || '';
+    const canEdit = canUserEditWorkdayOffDates();
+
+    let html = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d =>
+        `<div class="text-[10px] font-extrabold uppercase text-slate-500 py-1">${d}</div>`
+    ).join('');
+
     const firstDay = new Date(calcCurrentYear, calcCurrentMonth, 1).getDay();
     const daysInMonth = new Date(calcCurrentYear, calcCurrentMonth + 1, 0).getDate();
-    for (let i = 0; i < firstDay; i++) html += `<div></div>`;
 
-    const canEdit = canUserEditWorkdayOffDates();
-    for (let d = 1; d <= daysInMonth; d++) {
-        let iso = `${calcCurrentYear}-${String(calcCurrentMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-        let dayOfWeek = new Date(calcCurrentYear, calcCurrentMonth, d).getDay();
-        let isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        let isOff = AppState.toggledOffDates.includes(iso);
-
-        let cls = "bg-slate-950 text-slate-300 border-slate-800 hover:border-sky-500";
-        if (isOff) cls = "bg-rose-950/80 text-rose-300 border-rose-700/80 line-through";
-        else if (isWeekend) cls = "bg-slate-900/50 text-slate-500 border-slate-800/50";
-
-        const cursorCls = canEdit ? "cursor-pointer" : "cursor-default opacity-85";
-        html += `<button type="button" onclick="toggleCalcOffDate('${iso}')" class="p-1.5 rounded text-[11px] font-mono font-bold border transition ${cursorCls} ${cls}">${d}</button>`;
+    for (let i = 0; i < firstDay; i++) {
+        html += `<div></div>`;
     }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const iso = `${calcCurrentYear}-${String(calcCurrentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const off = isDateNonWorking(iso);
+        const isStart = iso === startIso;
+
+        let cls = off
+            ? "bg-rose-950/60 text-rose-300 border border-rose-800/60"
+            : "bg-slate-950 text-slate-200 border border-slate-800 hover:border-sky-500";
+        if (isStart) cls += " ring-2 ring-sky-400";
+        if (!canEdit) cls += " opacity-75 cursor-not-allowed";
+
+        html += `
+            <button type="button" onclick="toggleCalendarOffDate('${iso}')" class="calc-date-toggle-btn p-2 rounded-lg text-xs font-mono font-bold transition flex flex-col items-center justify-center ${cls}" title="${isoToMMDDYYYY(iso)}">
+                <span>${day}</span>
+                <span class="text-[9px] uppercase">${off ? 'OFF' : 'WORK'}</span>
+            </button>
+        `;
+    }
+
     grid.innerHTML = html;
 }
 
-async function toggleCalcOffDate(isoStr) {
-    if (!canUserEditWorkdayOffDates()) {
-        showSystemAlert("Access Restricted", "Only AdminTL or Super Admin can toggle working/non-working days on the calendar.", "🔒");
-        return;
-    }
-    const idx = AppState.toggledOffDates.indexOf(isoStr);
-    if (idx > -1) {
-        AppState.toggledOffDates.splice(idx, 1);
-        showToast(`${isoToMMDDYYYY(isoStr)} set to Working Day.`);
-    } else {
-        AppState.toggledOffDates.push(isoStr);
-        showToast(`${isoToMMDDYYYY(isoStr)} marked as Non-Working / Holiday.`);
-    }
-    await saveOffDatesStorage(true);
-    renderCalcCalendar();
-    runWorkdayCalculator();
+function getEndorseDraftStorageKey(ticketRefNo = "") {
+    const cleanRef = String(ticketRefNo || "").trim().toLowerCase() || "general";
+    return `LTO_ENDORSE_DRAFT_${String(currentUser.username || "user").toLowerCase()}_${cleanRef}`;
 }
 
-function runWorkdayCalculator() {
-    const startVal = document.getElementById('calcStartDate')?.value;
-    const daysVal = parseInt(document.getElementById('calcDaysInput')?.value || '20', 10);
-    if (!startVal || isNaN(daysVal)) return;
+function saveEndorseModalDraft(ticketRefNo = "") {
+    const draft = {
+        ticketIndex: document.getElementById('endorseTicketIndex')?.value || '',
+        referralNo: ticketRefNo || '',
+        officeKey: document.getElementById('endOfficeSelect')?.value || '',
+        chiefName: document.getElementById('endChiefName')?.value || '',
+        position: document.getElementById('endPosition')?.value || '',
+        agencyName: document.getElementById('endAgencyName')?.value || '',
+        officeAddress: document.getElementById('endOfficeAddress')?.value || '',
+        emailAddress: document.getElementById('endEmailAddress')?.value || '',
+        rdmpaoEmail: document.getElementById('endRdmpaoEmail')?.value || '',
+        complainantName: document.getElementById('endComplainantName')?.value || '',
+        complainantEmail: document.getElementById('endComplainantEmail')?.value || '',
+        briefDescription: document.getElementById('endBriefDescription')?.value || '',
+        fontFamily: document.getElementById('endFontFamily')?.value || 'font-sans',
+        sigType: document.querySelector('input[name="sigType"]:checked')?.value || 'esign',
+        arrangeMode: document.getElementById('endAttachmentArrangeMode')?.value || 'custom',
+        layoutMode: document.getElementById('endAttachmentLayoutMode')?.value || 'page_per_item',
+        attachments: (endorseAttachments || []).map(att => ({
+            id: att.id,
+            name: att.name,
+            type: att.type,
+            dataUrl: att.dataUrl,
+            pages: Array.isArray(att.pages) ? [...att.pages] : []
+        }))
+    };
+    lastEndorseModalDraft = draft;
+    try {
+        sessionStorage.setItem(getEndorseDraftStorageKey(ticketRefNo), JSON.stringify(draft));
+    } catch (e) {}
+}
 
-    let currentDate = new Date(startVal + "T12:00:00");
-    let added = 0;
-    let skipped = 0;
+function loadEndorseModalDraft(ticketRefNo = "") {
+    let draft = null;
+    try {
+        const raw = sessionStorage.getItem(getEndorseDraftStorageKey(ticketRefNo));
+        if (raw) draft = JSON.parse(raw);
+    } catch (e) {}
+    if (!draft && lastEndorseModalDraft && (!ticketRefNo || lastEndorseModalDraft.referralNo === ticketRefNo)) {
+        draft = lastEndorseModalDraft;
+    }
+    return draft;
+}
 
-    while (added < daysVal) {
-        currentDate.setDate(currentDate.getDate() + 1);
-        let iso = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
-        let dow = currentDate.getDay();
-        if (dow === 0 || dow === 6 || AppState.toggledOffDates.includes(iso)) {
-            skipped++;
-        } else {
-            added++;
+function clearEndorseModalDraft(ticketRefNo = "") {
+    lastEndorseModalDraft = null;
+    try {
+        sessionStorage.removeItem(getEndorseDraftStorageKey(ticketRefNo));
+    } catch (e) {}
+}
+
+let endorseAttachments = [];
+let activeEndorseTicket = null;
+let lastGeneratedEndorseData = null;
+
+if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+function triggerEndorseFilePicker() {
+    const input = document.getElementById('endAttachmentFiles');
+    if (input) {
+        input.value = '';
+        input.click();
+    }
+}
+
+function handleEndorseDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const dz = document.getElementById('endAttachmentDropzone');
+    if (dz) dz.classList.add('border-sky-400', 'bg-sky-950/20');
+}
+
+function handleEndorseDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const dz = document.getElementById('endAttachmentDropzone');
+    if (dz) dz.classList.remove('border-sky-400', 'bg-sky-950/20');
+}
+
+function handleEndorseFilesDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const dz = document.getElementById('endAttachmentDropzone');
+    if (dz) dz.classList.remove('border-sky-400', 'bg-sky-950/20');
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) {
+        processEndorseFiles(files);
+    }
+}
+
+function handleEndorseFilesSelected(e) {
+    const files = Array.from(e.target?.files || []);
+    if (files.length > 0) {
+        processEndorseFiles(files);
+    }
+}
+
+function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+
+function compressImageDataUrl(dataUrl, maxDim = 1600, quality = 0.85) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            let w = img.width;
+            let h = img.height;
+            if (w > maxDim || h > maxDim) {
+                if (w >= h) {
+                    h = Math.round((h * maxDim) / w);
+                    w = maxDim;
+                } else {
+                    w = Math.round((w * maxDim) / h);
+                    h = maxDim;
+                }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+    });
+}
+
+async function renderPdfFileToPageImages(file) {
+    if (!window.pdfjsLib) {
+        throw new Error("PDF renderer is not available.");
+    }
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pages = [];
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        pages.push(canvas.toDataURL('image/jpeg', 0.86));
+    }
+    return pages;
+}
+
+async function processEndorseFiles(files) {
+    const validFiles = files.filter(f => {
+        const isImg = f.type && f.type.startsWith('image/');
+        const isPdf = (f.type === 'application/pdf') || f.name.toLowerCase().endsWith('.pdf');
+        return isImg || isPdf;
+    });
+
+    if (validFiles.length === 0) {
+        showSystemAlert("Unsupported File", "Please attach image files (JPG, PNG, WEBP) or PDF files.", "⚠️");
+        return;
+    }
+
+    showToast(`Processing ${validFiles.length} attachment(s)...`);
+
+    for (const file of validFiles) {
+        try {
+            const id = 'att_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                const pageImages = await renderPdfFileToPageImages(file);
+                endorseAttachments.push({
+                    id,
+                    name: file.name,
+                    type: 'pdf',
+                    dataUrl: pageImages[0] || '',
+                    pages: pageImages
+                });
+            } else {
+                const rawUrl = await readFileAsDataUrl(file);
+                const compressedUrl = await compressImageDataUrl(rawUrl);
+                endorseAttachments.push({
+                    id,
+                    name: file.name,
+                    type: 'image',
+                    dataUrl: compressedUrl,
+                    pages: [compressedUrl]
+                });
+            }
+        } catch (err) {
+            console.warn("Attachment processing error:", err);
+            showSystemAlert("Attachment Error", `Could not process "${file.name}".`, "⚠️");
         }
     }
 
-    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const formattedDue = `${days[currentDate.getDay()]}, ${months[currentDate.getMonth()]} ${currentDate.getDate()}, ${currentDate.getFullYear()}`;
-
-    const resDate = document.getElementById('calcResultDate');
-    const resSub = document.getElementById('calcResultSubtitle');
-    if (resDate) resDate.textContent = formattedDue;
-    if (resSub) resSub.textContent = `After ${daysVal} working days (${skipped} weekend/off days skipped)`;
+    const arrangeSel = document.getElementById('endAttachmentArrangeMode');
+    if (arrangeSel && arrangeSel.value !== 'custom') {
+        sortEndorseAttachmentsByMode(arrangeSel.value);
+    }
+    renderEndorseAttachmentsList();
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
 }
 
-
-async function togglePlatformAutoGen(idx) {
-    const p = AppState.settings.platforms[idx];
-    if (!p) return;
-    if (typeof p === 'string') {
-        AppState.settings.platforms[idx] = { name: p, prefix: 'CPAO', autoGen: true };
-    } else {
-        const currentAuto = (p.autoGen === true || String(p.autoGen).trim().toLowerCase() === 'true' || p.autoGen === 1 || String(p.autoGen).trim().toUpperCase() === 'YES');
-        p.autoGen = !currentAuto;
-    }
-    const updated = AppState.settings.platforms[idx];
-    persistLocalSettingsCache();
-    renderSettingsTables();
-    populateDropdowns();
-    setSettingsFeedbackBanner(`Syncing ${updated.name} auto-generate (${updated.autoGen ? 'YES' : 'NO'}) to Google Sheets...`, "saving");
-    const synced = await saveAllSettingsToCloud(true);
-    if (synced) {
-        lastSettingsSavedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-        setSettingsFeedbackBanner(`${updated.name} auto-generate (${updated.autoGen ? 'YES' : 'NO'}) synced to Google Sheets.`, "success");
-        showToast(`${updated.name}: Auto-Generate set to ${updated.autoGen ? 'YES' : 'NO'} & synced to Google Sheets.`);
-    } else {
-        setSettingsFeedbackBanner(`${updated.name} updated locally — queued for Google Sheets sync.`, "dirty");
-        showToast(`${updated.name}: Auto-Generate set to ${updated.autoGen ? 'YES' : 'NO'} (queued for sync).`);
-    }
-}
-
-function populateReportFilterDropdowns() {
-    ensureCategoryGroupsInitialized();
-    const platSel = document.getElementById('repFilterPlatform');
-    if (platSel) {
-        const cur = platSel.value;
-        platSel.innerHTML = '<option value="">All Portals / Platforms</option>';
-        (AppState.settings.platforms || []).forEach(p => {
-            const name = typeof p === 'string' ? p : p.name;
-            if (name) platSel.innerHTML += `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`;
+function sortEndorseAttachmentsByMode(mode) {
+    if (!Array.isArray(endorseAttachments) || endorseAttachments.length < 2) return;
+    if (mode === 'name_asc') {
+        endorseAttachments.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    } else if (mode === 'name_desc') {
+        endorseAttachments.sort((a, b) => b.name.localeCompare(a.name, undefined, { sensitivity: 'base' }));
+    } else if (mode === 'images_first') {
+        endorseAttachments.sort((a, b) => {
+            if (a.type === b.type) return a.name.localeCompare(b.name);
+            return a.type === 'image' ? -1 : 1;
         });
-        if (cur) platSel.value = cur;
-    }
-    const catSel = document.getElementById('repFilterCategory');
-    if (catSel) {
-        const cur = catSel.value;
-        catSel.innerHTML = '<option value="">All Concern Categories</option>';
-        CATEGORY_GROUPS.forEach(grp => {
-            const items = AppState.settings.categoryGroups[grp] || [];
-            if (items.length > 0) {
-                const opts = items.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
-                catSel.innerHTML += `<optgroup label="${escapeHtml(grp)}">${opts}</optgroup>`;
-            }
+    } else if (mode === 'pdfs_first') {
+        endorseAttachments.sort((a, b) => {
+            if (a.type === b.type) return a.name.localeCompare(b.name);
+            return a.type === 'pdf' ? -1 : 1;
         });
-        if (cur) catSel.value = cur;
-    }
-    const scopeSel = document.getElementById('repAdminScope');
-    if (scopeSel && !isSuperAdmin() && !isAdminTL()) {
-        scopeSel.value = 'my';
-        scopeSel.disabled = true;
-    } else if (scopeSel) {
-        scopeSel.disabled = false;
     }
 }
 
-function generateReport() {
-    if (!canUserGenerateReports()) return;
-    setReportPreviewEditState(false);
+function applyEndorseAttachmentArrange(mode) {
+    if (mode && mode !== 'custom') {
+        sortEndorseAttachmentsByMode(mode);
+        renderEndorseAttachmentsList();
+    }
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
 
-    const container = document.getElementById('reportPreviewContainer');
+function onEndorseLayoutModeChange(mode) {
+    const modeLabel = mode === 'two_per_page'
+        ? '2 Items per Page'
+        : (mode === 'stacked_same_page' ? 'Stacked on Same Page' : '1 Item per Page');
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+    showToast(`Attachment layout set to ${modeLabel}.`);
+}
+
+function moveEndorseAttachment(idx, delta) {
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= endorseAttachments.length) return;
+    const temp = endorseAttachments[idx];
+    endorseAttachments[idx] = endorseAttachments[targetIdx];
+    endorseAttachments[targetIdx] = temp;
+
+    const arrangeSel = document.getElementById('endAttachmentArrangeMode');
+    if (arrangeSel) arrangeSel.value = 'custom';
+
+    renderEndorseAttachmentsList();
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
+
+function removeEndorseAttachment(idx) {
+    endorseAttachments.splice(idx, 1);
+    renderEndorseAttachmentsList();
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
+
+function clearAllEndorseAttachments() {
+    endorseAttachments = [];
+    renderEndorseAttachmentsList();
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
+
+function renderEndorseAttachmentsList() {
+    const container = document.getElementById('endAttachmentListContainer');
+    const clearBtn = document.getElementById('btnClearEndorseAttachments');
+    const arrangeBar = document.getElementById('endAttachmentArrangeBar');
     if (!container) return;
 
-    const startISO = document.getElementById('repStartDate')?.value || getTodayISO();
-    const endISO = document.getElementById('repEndDate')?.value || getTodayISO();
-    const platFilter = document.getElementById('repFilterPlatform')?.value || '';
-    const catFilter = document.getElementById('repFilterCategory')?.value || '';
-    const scopeFilter = document.getElementById('repAdminScope')?.value || 'all';
+    if (clearBtn) {
+        clearBtn.classList.toggle('hidden', endorseAttachments.length === 0);
+    }
+    if (arrangeBar) {
+        arrangeBar.classList.toggle('hidden', endorseAttachments.length === 0);
+    }
 
-    const startDate = new Date(startISO + "T00:00:00");
-    const endDate = new Date(endISO + "T23:59:59");
+    if (endorseAttachments.length === 0) {
+        container.innerHTML = `<p class="text-[11px] text-slate-500">No files attached. Drag &amp; drop or click <strong>+ Attach Files</strong> to include images or PDFs.</p>`;
+        return;
+    }
 
-    const filtered = (AppState.tickets || []).filter(t => {
-        if (!t.dateReceived) return false;
-        const iso = mmddyyyyToISO(t.dateReceived);
-        const tDate = new Date(iso + "T12:00:00");
-        if (isNaN(tDate.getTime()) || tDate < startDate || tDate > endDate) return false;
-        if (platFilter && String(t.platform || '').trim().toUpperCase() !== platFilter.toUpperCase()) return false;
-        if (catFilter && String(t.category || '').trim().toLowerCase() !== catFilter.toLowerCase()) return false;
-        if (scopeFilter === 'my' && !isTicketOwnedByCurrentUser(t)) return false;
-        return true;
-    });
+    container.innerHTML = endorseAttachments.map((att, idx) => {
+        const badge = att.type === 'pdf'
+            ? `<span class="px-1.5 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800/60 text-[9px] font-extrabold">PDF • ${att.pages.length}p</span>`
+            : `<span class="px-1.5 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800/60 text-[9px] font-extrabold">IMG</span>`;
+        const thumbHtml = att.dataUrl
+            ? `<img src="${att.dataUrl}" class="w-9 h-9 rounded object-cover border border-slate-700 shrink-0 bg-white" />`
+            : `<div class="w-9 h-9 rounded bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-400 shrink-0">FILE</div>`;
 
-    const totalReceived = filtered.length;
-    const resolvedCount = filtered.filter(t => String(t.status || '').trim().toLowerCase() === 'closed').length;
-    const pendingCount = totalReceived - resolvedCount;
-    const overallEfficiency = totalReceived > 0 ? ((resolvedCount / totalReceived) * 100).toFixed(1) : "0.0";
-
-    const portalStats = {};
-    filtered.forEach(t => {
-        const p = String(t.platform || 'OTHER').trim().toUpperCase();
-        if (!portalStats[p]) portalStats[p] = { total: 0, closed: 0, pending: 0 };
-        portalStats[p].total++;
-        if (String(t.status || '').trim().toLowerCase() === 'closed') portalStats[p].closed++;
-        else portalStats[p].pending++;
-    });
-
-    const portalEntries = Object.entries(portalStats).sort((a, b) => b[1].total - a[1].total);
-    const maxPortalTotal = portalEntries.length > 0 ? Math.max(...portalEntries.map(e => e[1].total)) : 1;
-
-    const portalRowsHtml = portalEntries.length === 0
-        ? `<tr><td colspan="5" class="text-center py-4 text-slate-500 italic">No ticket records found for the selected date range and filters.</td></tr>`
-        : portalEntries.map(([portal, st]) => {
-            const pct = st.total > 0 ? ((st.closed / st.total) * 100).toFixed(1) : "0.0";
-            const barWidth = Math.max(4, Math.round((st.total / maxPortalTotal) * 100));
-            return `
-                <tr class="border-b border-slate-200">
-                    <td class="py-2 px-2.5 font-bold text-slate-900">${escapeHtml(portal)}</td>
-                    <td class="py-2 px-2.5 text-center font-mono font-bold text-slate-800">${st.total}</td>
-                    <td class="py-2 px-2.5 text-center font-mono font-bold text-emerald-700">${st.closed}</td>
-                    <td class="py-2 px-2.5 text-center font-mono font-bold text-rose-700">${st.pending}</td>
-                    <td class="py-2 px-2.5">
-                        <div class="flex items-center gap-2">
-                            <div class="flex-1 bg-slate-200 h-2.5 rounded-full overflow-hidden">
-                                <div class="h-full bg-blue-700 rounded-full" style="width:${barWidth}%"></div>
-                            </div>
-                            <span class="font-mono text-[10px] font-bold text-slate-700 w-12 text-right">${pct}%</span>
-                        </div>
-                    </td>
-                </tr>
-            `;
-        }).join('');
-
-    const groupStats = {};
-    CATEGORY_GROUPS.forEach(g => { groupStats[g] = { total: 0, closed: 0, pending: 0 }; });
-    filtered.forEach(t => {
-        const grp = getGroupForCategory(t.category);
-        if (!groupStats[grp]) groupStats[grp] = { total: 0, closed: 0, pending: 0 };
-        groupStats[grp].total++;
-        if (String(t.status || '').trim().toLowerCase() === 'closed') groupStats[grp].closed++;
-        else groupStats[grp].pending++;
-    });
-
-    const groupRowsHtml = Object.entries(groupStats).map(([grp, st]) => {
-        const rate = st.total > 0 ? ((st.closed / st.total) * 100).toFixed(1) : "0.0";
         return `
-            <tr class="border-b border-slate-200">
-                <td class="py-1.5 px-2.5 font-semibold text-slate-900">${escapeHtml(grp)}</td>
-                <td class="py-1.5 px-2.5 text-center font-mono font-bold">${st.total}</td>
-                <td class="py-1.5 px-2.5 text-center font-mono text-emerald-700 font-bold">${st.closed}</td>
-                <td class="py-1.5 px-2.5 text-center font-mono text-rose-700 font-bold">${st.pending}</td>
-                <td class="py-1.5 px-2.5 text-right font-mono font-bold text-slate-800">${rate}%</td>
-            </tr>
+            <div class="flex items-center justify-between gap-2 bg-slate-900/90 border border-slate-800 rounded-lg p-2">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <span class="text-[11px] font-mono font-bold text-slate-400 w-5 text-center shrink-0">${idx + 1}.</span>
+                    ${thumbHtml}
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-1.5">
+                            ${badge}
+                            <span class="text-xs font-semibold text-white truncate">${escapeHtml(att.name)}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                    <button type="button" onclick="moveEndorseAttachment(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold" title="Move Up">▲</button>
+                    <button type="button" onclick="moveEndorseAttachment(${idx}, 1)" ${idx === endorseAttachments.length - 1 ? 'disabled' : ''} class="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-35 text-slate-200 rounded text-[10px] font-bold" title="Move Down">▼</button>
+                    <button type="button" onclick="removeEndorseAttachment(${idx})" class="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 rounded text-[10px] font-bold" title="Remove">✕</button>
+                </div>
+            </div>
         `;
     }).join('');
+}
 
-    const typeCounts = {};
-    filtered.forEach(t => {
-        const tt = String(t.ticketType || 'Unspecified').trim();
-        typeCounts[tt] = (typeCounts[tt] || 0) + 1;
+function buildEndorsementAttachmentsHtml() {
+    if (!Array.isArray(endorseAttachments) || endorseAttachments.length === 0) return '';
+
+    const layoutMode = document.getElementById('endAttachmentLayoutMode')?.value || 'page_per_item';
+    const flattenedItems = [];
+    endorseAttachments.forEach((att, attIdx) => {
+        const pages = Array.isArray(att.pages) && att.pages.length > 0 ? att.pages : (att.dataUrl ? [att.dataUrl] : []);
+        pages.forEach((imgUrl, pIdx) => {
+            const pageLabel = pages.length > 1 ? `${att.name} (Page ${pIdx + 1} of ${pages.length})` : att.name;
+            flattenedItems.push({
+                order: attIdx + 1,
+                label: pageLabel,
+                src: imgUrl
+            });
+        });
     });
-    const typeSummaryHtml = Object.keys(typeCounts).length === 0
-        ? `<p class="text-[11px] text-slate-500 italic">No classification data in range.</p>`
-        : Object.entries(typeCounts).map(([label, cnt]) => `
-            <div class="flex items-center justify-between text-[11px] py-1 border-b border-slate-200">
-                <span class="font-semibold text-slate-800">${escapeHtml(label)}</span>
-                <span class="font-mono font-extrabold text-blue-900">${cnt}</span>
+
+    if (flattenedItems.length === 0) return '';
+
+    if (layoutMode === 'stacked_same_page') {
+        const stackedCards = flattenedItems.map((item, idx) => `
+            <div class="border border-slate-300 rounded-lg p-2.5 bg-white space-y-1.5">
+                <div class="flex items-center justify-between text-[10px] font-bold text-slate-600 border-b border-slate-200 pb-1">
+                    <span>Attachment #${idx + 1}: ${escapeHtml(item.label)}</span>
+                </div>
+                <div class="flex justify-center">
+                    <img src="${item.src}" class="max-w-full max-h-[260px] w-auto h-auto object-contain rounded" />
+                </div>
             </div>
         `).join('');
 
-    const cfg = AppState.settings.reportConfig || {};
-    const headerHtml = buildReportPageHeaderHtml(
-        cfg,
-        startISO,
-        endISO,
-        overallEfficiency,
-        resolvedCount,
-        totalReceived,
-        cfg.title || "EXECUTIVE RESOLUTION & PORTAL PERFORMANCE REPORT"
-    );
+        return `
+            <div class="report-a4-page report-page-break" style="justify-content: flex-start; gap: 12px;">
+                <div class="border-b border-slate-300 pb-1.5 flex items-center justify-between">
+                    <span class="text-xs font-extrabold uppercase tracking-wider text-slate-800">Attached Supporting Documents (${flattenedItems.length})</span>
+                    <span class="text-[10px] font-mono text-slate-500">Ref: ${escapeHtml(lastGeneratedEndorseData?.ticketRefNo || '')}</span>
+                </div>
+                <div class="space-y-3">${stackedCards}</div>
+            </div>
+        `;
+    }
 
-    const preparedBy = String(currentUser.name || currentUser.username || "ADMIN").toUpperCase();
-    const matchedSig = REPORT_SIGNATORIES.find(s => s.name.toLowerCase() === preparedBy.toLowerCase());
-    const preparedDesig = matchedSig ? matchedSig.designation : "Public Relations Officer I";
-    const notedName = cfg.notedName || "MARY MAY M. JACOB";
-    const notedDesig = cfg.notedDesig || "Head, LTO COMMS/CPAO";
-
-    container.innerHTML = `
-        <div id="printableReportDocument" class="space-y-6">
-            <section class="report-a4-page space-y-5">
-                <div class="space-y-4">
-                    ${headerHtml}
-
-                    <div class="grid grid-cols-4 gap-3 pt-1">
-                        <div class="border border-slate-300 bg-slate-50 rounded-lg p-2.5 text-center">
-                            <p class="text-[9px] font-extrabold uppercase text-slate-500">Total Received</p>
-                            <p class="text-xl font-extrabold text-slate-900 mt-0.5">${totalReceived}</p>
-                        </div>
-                        <div class="border border-emerald-300 bg-emerald-50/70 rounded-lg p-2.5 text-center">
-                            <p class="text-[9px] font-extrabold uppercase text-emerald-700">Closed / Resolved</p>
-                            <p class="text-xl font-extrabold text-emerald-800 mt-0.5">${resolvedCount}</p>
-                        </div>
-                        <div class="border border-rose-300 bg-rose-50/70 rounded-lg p-2.5 text-center">
-                            <p class="text-[9px] font-extrabold uppercase text-rose-700">Pending Action</p>
-                            <p class="text-xl font-extrabold text-rose-800 mt-0.5">${pendingCount}</p>
-                        </div>
-                        <div class="border border-blue-300 bg-blue-50/70 rounded-lg p-2.5 text-center">
-                            <p class="text-[9px] font-extrabold uppercase text-blue-700">Resolution Rate</p>
-                            <p class="text-xl font-extrabold text-blue-900 mt-0.5">${overallEfficiency}%</p>
-                        </div>
+    if (layoutMode === 'two_per_page') {
+        let pagesHtml = '';
+        for (let i = 0; i < flattenedItems.length; i += 2) {
+            const pair = flattenedItems.slice(i, i + 2);
+            const pairCards = pair.map((item, idxInPair) => `
+                <div class="border border-slate-300 rounded-lg p-3 bg-white flex-1 flex flex-col justify-between gap-2">
+                    <div class="text-[10px] font-bold text-slate-700 border-b border-slate-200 pb-1">
+                        Attachment #${i + idxInPair + 1}: ${escapeHtml(item.label)}
                     </div>
-
-                    <div>
-                        <h4 class="text-[11px] font-extrabold uppercase text-slate-800 tracking-wide mb-1.5 border-l-4 border-blue-800 pl-2">I. Portal / Platform Performance Breakdown</h4>
-                        <table class="w-full text-left border-collapse text-[11px] border border-slate-300">
-                            <thead class="bg-slate-800 text-white uppercase text-[9.5px]">
-                                <tr>
-                                    <th class="py-2 px-2.5">Platform / Portal</th>
-                                    <th class="py-2 px-2.5 text-center">Received</th>
-                                    <th class="py-2 px-2.5 text-center">Closed</th>
-                                    <th class="py-2 px-2.5 text-center">Pending</th>
-                                    <th class="py-2 px-2.5">Efficiency Bar</th>
-                                </tr>
-                            </thead>
-                            <tbody>${portalRowsHtml}</tbody>
-                        </table>
-                    </div>
-
-                    <div>
-                        <h4 class="text-[11px] font-extrabold uppercase text-slate-800 tracking-wide mb-1.5 border-l-4 border-amber-600 pl-2">II. Concern Category Group Distribution</h4>
-                        <table class="w-full text-left border-collapse text-[11px] border border-slate-300">
-                            <thead class="bg-slate-800 text-white uppercase text-[9.5px]">
-                                <tr>
-                                    <th class="py-1.5 px-2.5">Category Group</th>
-                                    <th class="py-1.5 px-2.5 text-center">Total</th>
-                                    <th class="py-1.5 px-2.5 text-center">Closed</th>
-                                    <th class="py-1.5 px-2.5 text-center">Pending</th>
-                                    <th class="py-1.5 px-2.5 text-right">Rate</th>
-                                </tr>
-                            </thead>
-                            <tbody>${groupRowsHtml}</tbody>
-                        </table>
-                    </div>
-
-                    <div>
-                        <h4 class="text-[11px] font-extrabold uppercase text-slate-800 tracking-wide mb-1 border-l-4 border-emerald-700 pl-2">III. Ticket Classification Summary</h4>
-                        <div class="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2">
-                            ${typeSummaryHtml}
-                        </div>
+                    <div class="flex-1 flex items-center justify-center overflow-hidden">
+                        <img src="${item.src}" class="max-w-full max-h-[340px] w-auto h-auto object-contain rounded" />
                     </div>
                 </div>
+            `).join('');
 
-                <div class="pt-6 grid grid-cols-2 gap-8 text-xs text-slate-900 border-t border-slate-300">
-                    <div>
-                        <p class="text-[10px] font-bold uppercase text-slate-500 mb-8">Prepared by:</p>
-                        <p class="font-extrabold uppercase text-slate-900">${escapeHtml(preparedBy)}</p>
-                        <p class="text-[11px] text-slate-700">${escapeHtml(preparedDesig)}</p>
+            pagesHtml += `
+                <div class="report-a4-page report-page-break" style="gap: 14px;">
+                    <div class="border-b border-slate-300 pb-1.5 flex items-center justify-between">
+                        <span class="text-xs font-extrabold uppercase tracking-wider text-slate-800">Attached Supporting Documents</span>
+                        <span class="text-[10px] font-mono text-slate-500">Ref: ${escapeHtml(lastGeneratedEndorseData?.ticketRefNo || '')}</span>
                     </div>
-                    <div>
-                        <p class="text-[10px] font-bold uppercase text-slate-500 mb-8">Noted & Approved by:</p>
-                        <p class="font-extrabold uppercase text-slate-900">${escapeHtml(notedName)}</p>
-                        <p class="text-[11px] text-slate-700">${escapeHtml(notedDesig)}</p>
-                    </div>
+                    <div class="flex-1 flex flex-col gap-3">${pairCards}</div>
                 </div>
-            </section>
+            `;
+        }
+        return pagesHtml;
+    }
+
+    return flattenedItems.map((item, idx) => `
+        <div class="report-a4-page report-page-break" style="justify-content: flex-start; gap: 14px;">
+            <div class="border-b border-slate-300 pb-1.5 flex items-center justify-between">
+                <span class="text-xs font-extrabold uppercase tracking-wider text-slate-800">Attachment #${idx + 1}: ${escapeHtml(item.label)}</span>
+                <span class="text-[10px] font-mono text-slate-500">Ref: ${escapeHtml(lastGeneratedEndorseData?.ticketRefNo || '')}</span>
+            </div>
+            <div class="flex-1 flex items-center justify-center">
+                <img src="${item.src}" class="max-w-full max-h-[820px] w-auto h-auto object-contain rounded border border-slate-200" />
+            </div>
         </div>
-    `;
+    `).join('');
 }
+
+function populateEndorseChiefDropdown(regionIdx, preferredName = "") {
+    const chiefSel = document.getElementById('endChiefNameSelect');
+    if (!chiefSel) return;
+
+    const region = AppState.directory[regionIdx];
+    const officials = getRegionOfficialsList(regionIdx);
+
+    const options = [];
+    if (region && region.chief) {
+        options.push({
+            name: region.chief,
+            position: region.position || 'Regional Director',
+            email: region.email || ''
+        });
+    }
+    officials.forEach(off => {
+        if (off.name && !options.some(o => o.name.toLowerCase() === off.name.toLowerCase())) {
+            options.push({
+                name: off.name,
+                position: off.position || off.roleRank || 'Official',
+                email: off.email || (region ? region.email : '')
+            });
+        }
+    });
+
+    chiefSel.innerHTML = options.length > 0
+        ? options.map((o, i) => `<option value="${i}">${escapeHtml(o.name)} (${escapeHtml(o.position)})</option>`).join('')
+        : `<option value="">-- Manual Entry --</option>`;
+
+    chiefSel.dataset.optionsJson = JSON.stringify(options);
+
+    if (options.length > 0) {
+        let matchIdx = 0;
+        if (preferredName) {
+            const foundIdx = options.findIndex(o => o.name.toLowerCase().includes(preferredName.toLowerCase()) || preferredName.toLowerCase().includes(o.name.toLowerCase()));
+            if (foundIdx >= 0) matchIdx = foundIdx;
+        }
+        chiefSel.value = String(matchIdx);
+        const chosen = options[matchIdx];
+        document.getElementById('endChiefName').value = chosen.name;
+        document.getElementById('endPosition').value = chosen.position;
+        if (chosen.email) {
+            document.getElementById('endEmailAddress').value = chosen.email;
+            document.getElementById('endRdmpaoEmail').value = chosen.email;
+        }
+    }
+}
+
+function onEndorseChiefDropdownChange(selectedIdxStr) {
+    const chiefSel = document.getElementById('endChiefNameSelect');
+    if (!chiefSel || selectedIdxStr === "") return;
+    try {
+        const options = JSON.parse(chiefSel.dataset.optionsJson || '[]');
+        const chosen = options[parseInt(selectedIdxStr, 10)];
+        if (chosen) {
+            document.getElementById('endChiefName').value = chosen.name || '';
+            document.getElementById('endPosition').value = chosen.position || '';
+            if (chosen.email) {
+                document.getElementById('endEmailAddress').value = chosen.email;
+                document.getElementById('endRdmpaoEmail').value = chosen.email;
+            }
+        }
+    } catch (e) {}
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
+
+function openEndorseModal(idx) {
+    ensureDirectoryOfficialsInitialized();
+    const t = AppState.tickets[idx];
+    if (!t) return;
+    if (!canEndorseTicket(t)) {
+        showSystemAlert("Access Restricted", "You can only generate endorsement letters for ticket logs assigned to your own Admin account.", "🔒");
+        return;
+    }
+
+    activeEndorseTicket = t;
+    document.getElementById('endorseTicketIndex').value = idx;
+
+    const sel = document.getElementById('endOfficeSelect');
+    sel.innerHTML = '';
+    AppState.directory.forEach((d, i) => {
+        sel.innerHTML += `<option value="${i}">${escapeHtml(d.office)} (${escapeHtml(d.code)})</option>`;
+    });
+
+    const savedDraft = loadEndorseModalDraft(t.referralNo || '');
+
+    if (savedDraft) {
+        if (savedDraft.officeKey !== "" && AppState.directory[parseInt(savedDraft.officeKey, 10)]) {
+            sel.value = savedDraft.officeKey;
+            populateEndorseChiefDropdown(parseInt(savedDraft.officeKey, 10), savedDraft.chiefName || '');
+        } else {
+            sel.value = "0";
+            populateEndorseChiefDropdown(0);
+        }
+        document.getElementById('endChiefName').value = savedDraft.chiefName || '';
+        document.getElementById('endPosition').value = savedDraft.position || '';
+        document.getElementById('endAgencyName').value = savedDraft.agencyName || '';
+        document.getElementById('endOfficeAddress').value = savedDraft.officeAddress || '';
+        document.getElementById('endEmailAddress').value = savedDraft.emailAddress || '';
+        document.getElementById('endRdmpaoEmail').value = savedDraft.rdmpaoEmail || '';
+        document.getElementById('endComplainantName').value = savedDraft.complainantName || t.complainantName || '';
+        document.getElementById('endComplainantEmail').value = savedDraft.complainantEmail || '';
+        document.getElementById('endBriefDescription').value = savedDraft.briefDescription || '';
+        if (document.getElementById('endFontFamily')) document.getElementById('endFontFamily').value = savedDraft.fontFamily || 'font-sans';
+        const sigRadio = document.querySelector(`input[name="sigType"][value="${savedDraft.sigType || 'esign'}"]`);
+        if (sigRadio) sigRadio.checked = true;
+        if (document.getElementById('endAttachmentArrangeMode')) document.getElementById('endAttachmentArrangeMode').value = savedDraft.arrangeMode || 'custom';
+        if (document.getElementById('endAttachmentLayoutMode')) document.getElementById('endAttachmentLayoutMode').value = savedDraft.layoutMode || 'page_per_item';
+        endorseAttachments = Array.isArray(savedDraft.attachments) ? savedDraft.attachments : [];
+    } else {
+        let defaultIdx = 0;
+        const combinedText = `${t.actionTaken || ''} ${t.remarks || ''} ${t.ticketDetails || ''}`.toLowerCase();
+        const foundIdx = AppState.directory.findIndex(d => {
+            const codeMatch = d.code && new RegExp(`\b${d.code.toLowerCase()}\b`).test(combinedText);
+            const officeMatch = d.office && combinedText.includes(d.office.toLowerCase());
+            const regionNumMatch = d.office && /region\s*4-?a/i.test(combinedText) && /4-?a|iv-?a/i.test(d.office);
+            return codeMatch || officeMatch || regionNumMatch;
+        });
+        if (foundIdx >= 0) defaultIdx = foundIdx;
+        sel.value = String(defaultIdx);
+
+        onRegionDirectorySelect(String(defaultIdx));
+        document.getElementById('endComplainantName').value = t.complainantName || '';
+        document.getElementById('endComplainantEmail').value = '';
+        document.getElementById('endBriefDescription').value = '';
+        if (document.getElementById('endFontFamily')) document.getElementById('endFontFamily').value = 'font-sans';
+        const defaultSigRadio = document.querySelector('input[name="sigType"][value="esign"]');
+        if (defaultSigRadio) defaultSigRadio.checked = true;
+        if (document.getElementById('endAttachmentArrangeMode')) document.getElementById('endAttachmentArrangeMode').value = 'custom';
+        if (document.getElementById('endAttachmentLayoutMode')) document.getElementById('endAttachmentLayoutMode').value = 'page_per_item';
+        endorseAttachments = [];
+    }
+
+    renderEndorseAttachmentsList();
+    document.getElementById('endorseModal').style.display = 'flex';
+}
+
+function onRegionDirectorySelect(idxStr) {
+    ensureDirectoryOfficialsInitialized();
+    const idx = parseInt(idxStr, 10);
+    const d = AppState.directory[idx];
+    if (!d) return;
+    document.getElementById('endAgencyName').value = `Land Transportation Office – ${d.code || d.office}`;
+    document.getElementById('endOfficeAddress').value = d.address || '';
+    document.getElementById('endEmailAddress').value = d.email || '';
+    document.getElementById('endRdmpaoEmail').value = d.email || '';
+    populateEndorseChiefDropdown(idx);
+    saveEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+}
+
+function closeEndorseModal(discardDraft = false) {
+    if (discardDraft) {
+        clearEndorseModalDraft(activeEndorseTicket?.referralNo || '');
+        endorseAttachments = [];
+        renderEndorseAttachmentsList();
+    } else if (activeEndorseTicket) {
+        saveEndorseModalDraft(activeEndorseTicket.referralNo || '');
+    }
+    document.getElementById('endorseModal').style.display = 'none';
+}
+
+function closeEndorsePreviewModal() {
+    setEndorsementEditState(false);
+    document.getElementById('endorsePreviewModal').style.display = 'none';
+}
+
+function printEndorsementLetter() {
+    if (isEndorseLetterEditing) {
+        setEndorsementEditState(false);
+    }
+    document.body.classList.add('printing-endorse');
+    setTimeout(() => {
+        window.print();
+        setTimeout(() => {
+            document.body.classList.remove('printing-endorse');
+        }, 350);
+    }, 150);
+}
+
+function generateEndorsementLetter(e) {
+    e.preventDefault();
+    const idx = parseInt(document.getElementById('endorseTicketIndex').value, 10);
+    const t = AppState.tickets[idx] || activeEndorseTicket;
+    if (!t) return;
+
+    saveEndorseModalDraft(t.referralNo || '');
+
+    const chiefNameRaw = document.getElementById('endChiefName').value.trim();
+    const chiefName = escapeHtml(chiefNameRaw);
+    const chiefPosition = escapeHtml(document.getElementById('endPosition').value.trim());
+    const agencyName = escapeHtml(document.getElementById('endAgencyName').value.trim());
+    const officeAddress = escapeHtml(document.getElementById('endOfficeAddress').value.trim());
+    const emailAddress = escapeHtml(document.getElementById('endEmailAddress').value.trim() || 'rdmpao@lto.gov.ph');
+    const rdmpaoEmail = escapeHtml(document.getElementById('endRdmpaoEmail').value.trim() || emailAddress);
+    const complainantName = escapeHtml(document.getElementById('endComplainantName').value.trim());
+    const complainantEmail = escapeHtml(document.getElementById('endComplainantEmail').value.trim() || '—');
+    const briefDescInput = document.getElementById('endBriefDescription').value.trim();
+
+    const nameParts = chiefNameRaw.replace(/^(ATTY\.|ENGR\.|DIR\.|MR\.|MS\.|MRS\.)\s+/i, '').trim().split(/\s+/);
+    const chiefLastRaw = nameParts.length > 0 ? nameParts[nameParts.length - 1] : chiefNameRaw;
+    const chiefLastName = escapeHtml(chiefLastRaw.charAt(0).toUpperCase() + chiefLastRaw.slice(1).toLowerCase());
+
+    const fontFamily = document.getElementById('endFontFamily')?.value || 'font-sans';
+    const sigType = document.querySelector('input[name="sigType"]:checked')?.value || 'esign';
+
+    const ticketRefNo = escapeHtml(t.referralNo || 'N/A');
+    const platformRaw = String(t.platform || 'FACEBOOK').trim().toUpperCase();
+    const platform = escapeHtml(platformRaw === 'FACEBOOK' ? 'Facebook Messenger' : (t.platform || 'Facebook Messenger'));
+
+    const dateReceivedFormatted = escapeHtml(formatDayMonthYear(t.dateReceived || getTodayMMDDYYYY()));
+    const todayDate = escapeHtml(formatDayMonthYear(new Date()));
+
+    const dueDateStr = addWorkingDays(t.dateReceived || getTodayMMDDYYYY(), 20);
+    const dueDate = escapeHtml(formatDayMonthYear(dueDateStr));
+
+    const ticketSubjectTerm = escapeHtml(resolveTicketSubjectTerm(t));
+    const includeShowCause = isTrafficViolationConcern(t);
+
+    const forwardedClause = (platformRaw === 'IMKC' || /isumbong/i.test(t.ticketDetails || ''))
+        ? ' and subsequently forwarded to “Isumbong mo kay Chief” (ltoco.feedback@gmail.com)'
+        : '';
+
+    const briefDescription = briefDescInput
+        ? escapeHtml(briefDescInput)
+        : `regarding <strong>${escapeHtml(t.category || 'the concern raised')}</strong>${t.ticketDetails ? ` (${escapeHtml(t.ticketDetails)})` : ''}`;
+
+    const formCfg = getEndorsementFormConfig();
+    const signatureBlock = sigType === 'esign'
+        ? `<div class="font-bold text-xs text-slate-800 pl-6 mb-1">[SIGNED]</div>
+           <p class="font-extrabold uppercase text-xs text-slate-900">${escapeHtml(formCfg.sigName || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigName)}</p>
+           <p class="text-slate-800 text-xs">${escapeHtml(formCfg.sigTitle || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigTitle)}</p>
+           <p class="text-slate-700 text-xs">${escapeHtml(formCfg.sigOffice || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigOffice)}</p>`
+        : `<div class="h-12"></div>
+           <p class="font-extrabold uppercase text-xs text-slate-900">${escapeHtml(formCfg.sigName || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigName)}</p>
+           <p class="text-slate-800 text-xs">${escapeHtml(formCfg.sigTitle || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigTitle)}</p>
+           <p class="text-slate-700 text-xs">${escapeHtml(formCfg.sigOffice || STANDARD_ENDORSEMENT_TEMPLATE_FIELDS.sigOffice)}</p>`;
+
+    const selectedRegionObj = AppState.directory[parseInt(document.getElementById('endOfficeSelect')?.value || '0', 10)] || {};
+
+    lastGeneratedEndorseData = {
+        todayDate,
+        dateReceivedFormatted,
+        chiefName,
+        chiefLastName,
+        chiefPosition,
+        agencyName,
+        officeName: escapeHtml(selectedRegionObj.office || agencyName),
+        officeAddress,
+        emailAddress,
+        rdmpaoEmail,
+        complainantName,
+        complainantEmail,
+        platform,
+        ticketSubjectTerm,
+        forwardedClause,
+        briefDescription,
+        dueDate,
+        ticketRefNo,
+        includeShowCause,
+        signatureBlock
+    };
+
+    const attachmentHtml = buildEndorsementAttachmentsHtml();
+    const letterBodyHtml = renderStandardEndorsementLetterHtml({
+        ...lastGeneratedEndorseData,
+        attachmentHtml: ''
+    });
+
+    const fontClass = fontFamily === 'font-serif' ? 'font-serif' : 'font-sans';
+    document.getElementById('endorseLetterPrintArea').innerHTML = `
+        <div class="report-a4-page ${fontClass}" style="justify-content: flex-start; padding: 20mm 22mm;">
+            ${letterBodyHtml}
+        </div>
+        ${attachmentHtml}
+    `;
+
+    setEndorsementEditState(false);
+    document.getElementById('endorseModal').style.display = 'none';
+    document.getElementById('endorsePreviewModal').style.display = 'flex';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    initSystem();
+});
